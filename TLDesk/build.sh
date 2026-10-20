@@ -3,8 +3,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 CONFIG="${1:-release}"
-swift build -c "$CONFIG" --product TLDesk
-BIN="$(swift build -c "$CONFIG" --show-bin-path)/TLDesk"
+# 在已受限的沙箱（CI 容器、agent 环境）里，SwiftPM 编译 manifest 会二次套 sandbox-exec 而失败，
+# 此时加 SWIFT_FLAGS=--disable-sandbox 即可。本地终端不用管。
+SWIFT_FLAGS="${SWIFT_FLAGS:-}"
+swift build -c "$CONFIG" $SWIFT_FLAGS --product TLDesk
+BIN="$(swift build -c "$CONFIG" $SWIFT_FLAGS --show-bin-path)/TLDesk"
 
 APP="TLDesk.app"
 rm -rf "$APP"
