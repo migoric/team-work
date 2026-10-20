@@ -114,13 +114,13 @@ struct Hero: View {
 }
 
 struct DualBar: View {
-    let claimed: Int
+    let planned: Int
     let actual: Int
     var tint: Color = Theme.bad
 
     var body: some View {
         VStack(spacing: 5) {
-            row(label: "声称", value: claimed, tint: Color.primary.opacity(0.26), textTint: Color.secondary)
+            row(label: "计划", value: planned, tint: Color.primary.opacity(0.26), textTint: Color.secondary)
             row(label: "事实", value: actual, tint: tint, textTint: tint)
         }
     }
@@ -159,6 +159,32 @@ struct RiskBar: View {
             .fill(tint.opacity(0.85))
             .frame(width: 2.5)
             .frame(maxHeight: .infinity)
+    }
+}
+
+struct QuietState: View {
+    let icon: String
+    let title: String
+    let note: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: icon)
+                .font(.system(size: 12.5))
+                .foregroundStyle(.tertiary)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: 12.5, weight: .medium))
+                Text(note)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(14)
+        .cardSurface()
     }
 }
 

@@ -9,14 +9,26 @@ struct ProgressPanel: View {
         PanelScaffold(
             panel: .progress,
             headline: "进度偏差",
-            detail: "\(store.openDeviations) 处需要你介入 · 其余 \(store.snapshot.claimedOk) 个需求声称与事实一致"
+            detail: "\(store.openDeviations) 处落后 · 其余 \(store.snapshot.aligned) 个与时间轴一致"
         ) {
             Hero(
                 count: store.openDeviations,
-                headline: "个需求的声称进度和代码里的事实对不上",
-                detail: "点开任意一条看证据。证据全部来自 git、PR 与接口状态，不来自任何人的周报。",
+                headline: items.isEmpty
+                    ? "个需求落后，其余都对得上时间轴"
+                    : "个需求按时间该做完了，代码里还差着",
+                detail: items.isEmpty
+                    ? "没有需要你介入的。没有时间基线的不参与判断——这一栏宁可空着，也不猜。"
+                    : "计划看时间轴，事实看任务清单和关联 MR 的状态。两个都是算出来的，不需要谁去填表。",
                 tint: Theme.bad
             )
+
+            if items.isEmpty {
+                QuietState(
+                    icon: "checkmark.circle",
+                    title: "没有落后的需求",
+                    note: "所有带时间基线的 issue 都在进度上，或者超前。没有基线的不做判断——不猜。"
+                )
+            }
 
             ForEach(items) { item in
                 DeviationCard(item: item)
@@ -32,7 +44,7 @@ struct DeviationCard: View {
 
     private var severity: Color {
         if item.delta <= -30 { return Theme.bad }
-        if item.delta <= -10 { return Theme.warn }
+        if item.delta <= -12 { return Theme.warn }
         return Color.primary.opacity(0.42)
     }
 
@@ -59,7 +71,7 @@ struct DeviationCard: View {
                 .padding(.top, 3)
             }
 
-            DualBar(claimed: item.claimed, actual: item.actual, tint: severity)
+            DualBar(planned: item.planned, actual: item.actual, tint: severity)
 
             if expanded {
                 VStack(alignment: .leading, spacing: 6) {
@@ -111,6 +123,14 @@ struct ReviewPanel: View {
                 tint: Theme.warn
             )
 
+            if store.snapshot.prs.isEmpty {
+                QuietState(
+                    icon: "tray",
+                    title: "没有待评审的 MR",
+                    note: "draft 不算待评审——它们算在进展偏差里。这里只出现已经准备好看、但还卡着没合的。"
+                )
+            }
+
             ForEach(store.snapshot.prs) { pr in
                 PRRow(pr: pr)
             }
@@ -123,6 +143,7 @@ struct PRRow: View {
     @State private var hovering = false
 
     private var footprint: String {
+        if pr.routes == 0 && pr.components == 0 { return "影响面待分析" }
         if pr.routes == 0 { return "未触及路由" }
         return "\(pr.routes) 条路由 · \(pr.components) 个共享组件"
     }
@@ -165,14 +186,28 @@ struct BugsPanel: View {
         PanelScaffold(
             panel: .bugs,
             headline: "新 Bug",
-            detail: "\(store.freshBugs) 条 · 已尝试归因到 commit"
+            detail: store.snapshot.bugs.isEmpty
+                ? "尚未接入监控"
+                : "\(store.freshBugs) 条 · 已尝试归因到 commit"
         ) {
             Hero(
                 count: store.freshBugs,
-                headline: "条线上问题，按出现次数排",
-                detail: "怀疑的 commit 是从 sourcemap 与发布记录反查的，点开可看当时一起发布的改动。",
+                headline: store.snapshot.bugs.isEmpty
+                    ? "条线上问题待处理"
+                    : "条线上问题，按出现次数排",
+                detail: store.snapshot.bugs.isEmpty
+                    ? "接上监控之前，这一栏就是空的。"
+                    : "怀疑的 commit 是从 sourcemap 与发布记录反查的，点开可看当时一起发布的改动。",
                 tint: Theme.warn
             )
+
+            if store.snapshot.bugs.isEmpty {
+                QuietState(
+                    icon: "antenna.radiowaves.left.and.right.slash",
+                    title: "还没有接入监控",
+                    note: "这一栏要把线上报错和 sourcemap、发布记录对上，接上之后新出现的问题会自动进这里。空着比塞假数据好。"
+                )
+            }
 
             ForEach(store.snapshot.bugs) { bug in
                 BugRow(bug: bug)
@@ -239,6 +274,14 @@ struct HealthPanel: View {
                     .foregroundStyle(.tertiary)
             }
             .padding(.bottom, 6)
+
+            if store.snapshot.health.isEmpty {
+                QuietState(
+                    icon: "gauge.with.dots.needle.0percent",
+                    title: "还没有跑过本地体检",
+                    note: "依赖版本、产物体积、性能这三条要在仓库根跑一遍才有数。没跑之前不做任何结论。"
+                )
+            }
 
             ForEach(store.snapshot.health) { metric in
                 HealthRow(metric: metric)

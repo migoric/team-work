@@ -1,0 +1,12 @@
+{
+  "name": "tl-sidecar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TL Desk 的数据采集 sidecar：把 git 与 GitLab 的事实写成 snapshot.json",
+  "bin": { "tl": "./tl.mjs" },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": { "node": ">=20" }
+}

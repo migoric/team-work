@@ -5,11 +5,13 @@ struct Deviation: Codable, Identifiable, Hashable {
     let title: String
     let owner: String
     let ticket: String
-    let claimed: Int
+    /// 时间轴应然进度（0-100）。不是"人声称的进度"——GitLab 里没有那个字段。
+    let planned: Int
+    /// 代码事实进度（0-100）：任务清单勾选率 + 关联 MR 状态。
     let actual: Int
     let evidence: [String]
 
-    var delta: Int { actual - claimed }
+    var delta: Int { actual - planned }
 }
 
 enum Risk: String, Codable, Hashable {
@@ -47,19 +49,22 @@ struct HealthMetric: Codable, Identifiable, Hashable {
 
 struct Snapshot: Codable {
     let dateLabel: String
-    let claimedOk: Int
+    let aligned: Int
     let deviations: [Deviation]
     let prs: [PullRequest]
     let bugs: [BugItem]
     let health: [HealthMetric]
 
-    static let empty = Snapshot(dateLabel: "", claimedOk: 0, deviations: [], prs: [], bugs: [], health: [])
+    static let empty = Snapshot(dateLabel: "", aligned: 0, deviations: [], prs: [], bugs: [], health: [])
 }
 
 extension Snapshot {
+    /// 默认读 ~/.tldesk/snapshot.json；TLDESK_SNAPSHOT 可覆盖，方便拿另一份快照调试/出图。
     static func load() -> Snapshot? {
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".tldesk/snapshot.json")
+        let env = ProcessInfo.processInfo.environment["TLDESK_SNAPSHOT"]
+        let url = env.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+            ?? FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent(".tldesk/snapshot.json")
         guard let data = try? Data(contentsOf: url) else { return nil }
         return try? JSONDecoder().decode(Snapshot.self, from: data)
     }
@@ -68,14 +73,14 @@ extension Snapshot {
 extension Snapshot {
     static let sample = Snapshot(
         dateLabel: "10 月 21 日 · 周二",
-        claimedOk: 6,
+        aligned: 6,
         deviations: [
             Deviation(
                 id: "DEV-201",
                 title: "订单详情页支持批量退款",
                 owner: "陈默",
                 ticket: "FE-2013",
-                claimed: 80,
+                planned: 80,
                 actual: 40,
                 evidence: [
                     "PR #482 仍是 draft，最后一次提交 3 天前",
@@ -88,7 +93,7 @@ extension Snapshot {
                 title: "会员中心改版 · 第二阶段",
                 owner: "林知",
                 ticket: "FE-2088",
-                claimed: 90,
+                planned: 90,
                 actual: 65,
                 evidence: [
                     "9 个页面已完成 6 个，剩余 3 个无对应提交",
@@ -101,7 +106,7 @@ extension Snapshot {
                 title: "全局搜索接入新排序",
                 owner: "赵屿",
                 ticket: "FE-2104",
-                claimed: 50,
+                planned: 50,
                 actual: 45,
                 evidence: [
                     "差异在预期内，仅灰度开关未接入",

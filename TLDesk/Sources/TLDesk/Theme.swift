@@ -25,7 +25,7 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
 
     var caption: String {
         switch self {
-        case .progress: return "声称 与 代码事实 的偏差"
+        case .progress: return "计划 与 事实 的偏差"
         case .review: return "这次改动会炸到哪里"
         case .bugs: return "新出现、还没人认领"
         case .health: return "只跟上一版自己比"

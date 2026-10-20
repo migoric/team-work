@@ -1,13 +1,13 @@
 {
   "dateLabel": "10 月 21 日 · 周二",
-  "claimedOk": 6,
+  "aligned": 6,
   "deviations": [
     {
       "id": "DEV-201",
       "title": "订单详情页支持批量退款",
       "owner": "陈默",
       "ticket": "FE-2013",
-      "claimed": 80,
+      "planned": 80,
       "actual": 40,
       "evidence": [
         "PR #482 仍是 draft，最后一次提交 3 天前",
@@ -20,7 +20,7 @@
       "title": "会员中心改版 · 第二阶段",
       "owner": "林知",
       "ticket": "FE-2088",
-      "claimed": 90,
+      "planned": 90,
       "actual": 65,
       "evidence": [
         "9 个页面已完成 6 个，剩余 3 个没有对应提交",
