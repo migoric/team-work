@@ -23,18 +23,111 @@ struct PullRequest: Codable, Identifiable, Hashable {
     let title: String
     let author: String
     let age: String
+    /// 受影响路由数。0 且 analyzed=false 时代表"没算过"，不是"没有影响"。
     let routes: Int
+    /// 被 2 条以上路由间接用到的改动文件数，也就是动了共享层的程度
     let components: Int
     let risk: Risk
     let note: String
+    /// 是否真的跑过影响面分析。false 时 UI 必须显示"待分析"，不能显示 0。
+    let analyzed: Bool
+    let impactedRoutes: [String]
+    let files: [String]
+
+    init(
+        id: String,
+        title: String,
+        author: String,
+        age: String,
+        routes: Int,
+        components: Int,
+        risk: Risk,
+        note: String,
+        analyzed: Bool = false,
+        impactedRoutes: [String] = [],
+        files: [String] = []
+    ) {
+        self.id = id
+        self.title = title
+        self.author = author
+        self.age = age
+        self.routes = routes
+        self.components = components
+        self.risk = risk
+        self.note = note
+        self.analyzed = analyzed
+        self.impactedRoutes = impactedRoutes
+        self.files = files
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, author, age, routes, components, risk, note, analyzed, impactedRoutes, files
+    }
+
+    // 旧的 snapshot 里没有这几个字段。读旧文件应该退化，而不是整个 app 切回假数据。
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        author = try c.decode(String.self, forKey: .author)
+        age = try c.decode(String.self, forKey: .age)
+        routes = try c.decodeIfPresent(Int.self, forKey: .routes) ?? 0
+        components = try c.decodeIfPresent(Int.self, forKey: .components) ?? 0
+        risk = try c.decodeIfPresent(Risk.self, forKey: .risk) ?? .low
+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        analyzed = try c.decodeIfPresent(Bool.self, forKey: .analyzed) ?? false
+        impactedRoutes = try c.decodeIfPresent([String].self, forKey: .impactedRoutes) ?? []
+        files = try c.decodeIfPresent([String].self, forKey: .files) ?? []
+    }
 }
 
 struct BugItem: Codable, Identifiable, Hashable {
     let id: String
     let title: String
-    let occurrences: Int
+    /// 数字的含义由 countLabel 决定：接监控时是"次"，只有 GitLab 时是"天未认领 / 天未修"。
+    let count: Int
+    let countLabel: String
     let firstSeen: String
     let suspect: String
+    /// 是否真的反查到具体 commit。false 时 UI 显示"待定位"。
+    let attributed: Bool
+    let unassigned: Bool
+
+    init(
+        id: String,
+        title: String,
+        count: Int,
+        countLabel: String,
+        firstSeen: String,
+        suspect: String,
+        attributed: Bool = false,
+        unassigned: Bool = false
+    ) {
+        self.id = id
+        self.title = title
+        self.count = count
+        self.countLabel = countLabel
+        self.firstSeen = firstSeen
+        self.suspect = suspect
+        self.attributed = attributed
+        self.unassigned = unassigned
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, count, countLabel, firstSeen, suspect, attributed, unassigned
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        count = try c.decodeIfPresent(Int.self, forKey: .count) ?? 0
+        countLabel = try c.decodeIfPresent(String.self, forKey: .countLabel) ?? "次"
+        firstSeen = try c.decodeIfPresent(String.self, forKey: .firstSeen) ?? "—"
+        suspect = try c.decodeIfPresent(String.self, forKey: .suspect) ?? "待定位"
+        attributed = try c.decodeIfPresent(Bool.self, forKey: .attributed) ?? false
+        unassigned = try c.decodeIfPresent(Bool.self, forKey: .unassigned) ?? false
+    }
 }
 
 struct HealthMetric: Codable, Identifiable, Hashable {
@@ -42,9 +135,48 @@ struct HealthMetric: Codable, Identifiable, Hashable {
     let name: String
     let value: String
     let delta: String
+    /// 占预算的比例，用来画条。不是"健康度评分"，别过度解读。
     let ratio: Double
     let worse: Bool
     let note: String
+    /// 最近 12 次的读数，画 sparkline 用。只有一次就画点，不画假趋势。
+    let history: [Double]
+
+    init(
+        id: String,
+        name: String,
+        value: String,
+        delta: String,
+        ratio: Double,
+        worse: Bool,
+        note: String,
+        history: [Double] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.value = value
+        self.delta = delta
+        self.ratio = ratio
+        self.worse = worse
+        self.note = note
+        self.history = history
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, value, delta, ratio, worse, note, history
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        value = try c.decodeIfPresent(String.self, forKey: .value) ?? "—"
+        delta = try c.decodeIfPresent(String.self, forKey: .delta) ?? ""
+        ratio = try c.decodeIfPresent(Double.self, forKey: .ratio) ?? 0
+        worse = try c.decodeIfPresent(Bool.self, forKey: .worse) ?? false
+        note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
+        history = try c.decodeIfPresent([Double].self, forKey: .history) ?? []
+    }
 }
 
 struct Snapshot: Codable {
@@ -71,66 +203,200 @@ extension Snapshot {
 }
 
 extension Snapshot {
+    /// 内置样例。文案里带"样例"两个字是故意的：任何一张截图都不能被误读成真实数据。
     static let sample = Snapshot(
-        dateLabel: "10 月 21 日 · 周二",
+        dateLabel: "样例 · 10 月 21 日",
         aligned: 6,
         deviations: [
             Deviation(
-                id: "DEV-201",
+                id: "#482",
                 title: "订单详情页支持批量退款",
                 owner: "陈默",
                 ticket: "FE-2013",
                 planned: 80,
                 actual: 40,
                 evidence: [
-                    "PR #482 仍是 draft，最后一次提交 3 天前",
-                    "退款确认弹窗的 4 个分支只实现了 1 个",
-                    "依赖的 /api/refund/batch 在后端仓库还没合并"
+                    "偏差 −40 个百分点",
+                    "任务清单 2/5 已勾选",
+                    "MR !482 仍是 draft，最后更新 3 天前（6 条评论）",
+                    "按时间轴，现在应完成 80%（到期 2026-10-23）"
                 ]
             ),
             Deviation(
-                id: "DEV-207",
+                id: "#491",
                 title: "会员中心改版 · 第二阶段",
                 owner: "林知",
                 ticket: "FE-2088",
                 planned: 90,
                 actual: 65,
                 evidence: [
-                    "9 个页面已完成 6 个，剩余 3 个无对应提交",
-                    "设计稿 10 月 18 日更新到 v7，代码里仍是 v5 的间距",
-                    "PR #491 待你评审，阻塞了 2 天"
+                    "偏差 −25 个百分点",
+                    "任务清单 6/9 已勾选",
+                    "MR !491 开着等评审，最后更新 2 天前（11 条评论）",
+                    "按时间轴，现在应完成 90%（到期 2026-10-22）"
                 ]
             ),
             Deviation(
-                id: "DEV-212",
+                id: "#504",
                 title: "全局搜索接入新排序",
                 owner: "赵屿",
                 ticket: "FE-2104",
                 planned: 50,
-                actual: 45,
+                actual: 41,
                 evidence: [
-                    "差异在预期内，仅灰度开关未接入",
-                    "预计 1 天内追平，今天不需要你介入"
+                    "偏差 −9 个百分点",
+                    "任务清单 4/10 已勾选",
+                    "差异在预期内，预计 1 天内追平"
                 ]
             )
         ],
         prs: [
-            PullRequest(id: "482", title: "feat: 批量退款确认流程", author: "陈默", age: "3 天", routes: 1, components: 4, risk: .high, note: "改了共享的 Modal 与 Form 基座，波及 11 个页面"),
-            PullRequest(id: "491", title: "refactor: 会员中心抽离 skeleton", author: "林知", age: "2 天", routes: 9, components: 12, risk: .medium, note: "纯重构，但有 2 处 props 语义变化"),
-            PullRequest(id: "487", title: "fix: 表格横向滚动抖动", author: "赵屿", age: "1 天", routes: 23, components: 1, risk: .low, note: "只动了一个 CSS 文件，影响面靠样式依赖推出"),
-            PullRequest(id: "495", title: "chore: 升级 vite 5.4", author: "你", age: "6 小时", routes: 0, components: 0, risk: .medium, note: "构建链路改动，建议先跑一次全量 e2e")
+            PullRequest(
+                id: "482",
+                title: "feat: 批量退款确认流程",
+                author: "陈默",
+                age: "3 天",
+                routes: 11,
+                components: 4,
+                risk: .high,
+                note: "4 个改动被多条路由共用",
+                analyzed: true,
+                impactedRoutes: ["/orders/[id]", "/orders/list", "/refund/confirm", "/refund/result", "/me/orders"],
+                files: ["components/Modal.tsx", "components/Form.tsx", "orders/refund.tsx"]
+            ),
+            PullRequest(
+                id: "491",
+                title: "refactor: 会员中心抽离 skeleton",
+                author: "林知",
+                age: "2 天",
+                routes: 9,
+                components: 12,
+                risk: .high,
+                note: "12 个改动被多条路由共用，基本是整层重构",
+                analyzed: true,
+                impactedRoutes: ["/me", "/me/profile", "/me/vip", "/me/coupons"],
+                files: ["components/Skeleton.tsx", "me/layout.tsx"]
+            ),
+            PullRequest(
+                id: "487",
+                title: "fix: 表格横向滚动抖动",
+                author: "赵屿",
+                age: "1 天",
+                routes: 23,
+                components: 0,
+                risk: .medium,
+                note: "只动了一个样式文件，未触及共享层",
+                analyzed: true,
+                impactedRoutes: ["/orders/list", "/inventory", "/reports"],
+                files: ["styles/table.css"]
+            ),
+            PullRequest(
+                id: "495",
+                title: "chore: 升级 vite 5.4",
+                author: "你",
+                age: "6 小时",
+                routes: 0,
+                components: 0,
+                risk: .medium,
+                note: "改动 6 个文件 · 0 天未更新 · 影响面未分析",
+                analyzed: false,
+                impactedRoutes: [],
+                files: []
+            )
         ],
         bugs: [
-            BugItem(id: "BUG-88", title: "移动端 Safari 下日期选择器不响应", occurrences: 14, firstSeen: "昨天 18:20", suspect: "a3f9c21 · #487"),
-            BugItem(id: "BUG-91", title: "批量操作后列表未刷新", occurrences: 9, firstSeen: "今天 09:11", suspect: "7be0d44 · #482"),
-            BugItem(id: "BUG-87", title: "头像加载偶发 403", occurrences: 31, firstSeen: "4 天前", suspect: "疑似 CDN 策略，非代码"),
-            BugItem(id: "BUG-92", title: "暗色模式下图表轴线消失", occurrences: 2, firstSeen: "今天 11:02", suspect: "待定位")
+            BugItem(
+                id: "#312",
+                title: "移动端 Safari 下日期选择器不响应",
+                count: 4,
+                countLabel: "天未认领",
+                firstSeen: "4 天前",
+                suspect: "待定位",
+                attributed: false,
+                unassigned: true
+            ),
+            BugItem(
+                id: "#318",
+                title: "批量操作后列表未刷新",
+                count: 2,
+                countLabel: "天未认领",
+                firstSeen: "昨天",
+                suspect: "a3f9c21 · fix: 表格抖动",
+                attributed: true,
+                unassigned: true
+            ),
+            BugItem(
+                id: "#301",
+                title: "暗色模式下图表轴线消失",
+                count: 9,
+                countLabel: "天未修",
+                firstSeen: "9 天前",
+                suspect: "7be0d44 · feat: 图表主题化",
+                attributed: true,
+                unassigned: false
+            ),
+            BugItem(
+                id: "#295",
+                title: "头像加载偶发 403",
+                count: 12,
+                countLabel: "天未修",
+                firstSeen: "12 天前",
+                suspect: "疑似 CDN 策略，非代码",
+                attributed: false,
+                unassigned: false
+            )
         ],
         health: [
-            HealthMetric(id: "dep", name: "依赖落后", value: "React 18.2", delta: "落后 7 个月", ratio: 0.62, worse: true, note: "19.x 有两处 breaking 需要先改"),
-            HealthMetric(id: "js", name: "首屏 JS", value: "412 KB", delta: "+18 KB", ratio: 0.71, worse: true, note: "主要来自新加的图表库"),
-            HealthMetric(id: "lcp", name: "LCP p75", value: "2.1 s", delta: "−0.2 s", ratio: 0.42, worse: false, note: "上一版做了骨架屏"),
-            HealthMetric(id: "api", name: "废弃 API 面", value: "12 处", delta: "+3", ratio: 0.34, worse: true, note: "新增的 3 处都在会员中心")
+            HealthMetric(
+                id: "bundle",
+                name: "产物体积",
+                value: "1.42 MB",
+                delta: "+86.0 KB",
+                ratio: 0.95,
+                worse: true,
+                note: "dist/ 实际字节数，占预算 95%",
+                history: [1.20, 1.24, 1.28, 1.31, 1.34, 1.42]
+            ),
+            HealthMetric(
+                id: "loc",
+                name: "源码体量",
+                value: "48.2k 行",
+                delta: "+1.2k",
+                ratio: 0.80,
+                worse: true,
+                note: "312 个文件，最大的是 pages/orders/list.tsx（812 行）",
+                history: [42.0, 43.1, 44.8, 46.0, 47.0, 48.2]
+            ),
+            HealthMetric(
+                id: "unusedDeps",
+                name: "未使用的直接依赖",
+                value: "3 个",
+                delta: "持平",
+                ratio: 0.30,
+                worse: false,
+                note: "源码里一次都没 import：classnames、dayjs、query-string",
+                history: [4, 4, 3, 3, 3, 3]
+            ),
+            HealthMetric(
+                id: "multiVersion",
+                name: "重复版本依赖",
+                value: "2 个",
+                delta: "−1",
+                ratio: 0.20,
+                worse: false,
+                note: "同一个包锁了多个版本：@types/react×2、safe-buffer×2",
+                history: [3, 3, 3, 3, 2, 2]
+            ),
+            HealthMetric(
+                id: "deprecated",
+                name: "废弃 API 面",
+                value: "7 处",
+                delta: "+3",
+                ratio: 0.35,
+                worse: true,
+                note: "componentWillMount ×4 @ pages/me/index.tsx；.substr ×3 @ utils/format.ts",
+                history: [4, 4, 5, 5, 4, 7]
+            )
         ]
     )
 }

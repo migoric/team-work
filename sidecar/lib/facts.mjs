@@ -127,8 +127,20 @@ export function dateLabel(now = new Date()) {
  * 组装完整的 snapshot。字段名必须和 Swift 端 Models.swift 一一对应。
  *
  * minDelta 默认 5：小于 5 个百分点的差距是估算噪声，报出来只会稀释真正要紧的那几条。
+ *
+ * analyzeMr 是可选的影响面分析器：给一个 MR，回 { analyzed, routes, shared, risk, files, notes }。
+ * 没传就退回按改动文件数估风险，并在 note 里明说「影响面未分析」—— 不假装算过。
  */
-export function buildSnapshot({ issues = [], mergeRequests = [], now = new Date(), maxDeviations = 8, minDelta = 5 }) {
+export function buildSnapshot({
+  issues = [],
+  mergeRequests = [],
+  now = new Date(),
+  maxDeviations = 8,
+  minDelta = 5,
+  analyzeMr = null,
+  bugs = [],
+  health = []
+}) {
   const linked = linkMergeRequests(issues, mergeRequests);
 
   const rows = [];
@@ -163,15 +175,35 @@ export function buildSnapshot({ issues = [], mergeRequests = [], now = new Date(
     .slice(0, 12)
     .map((mr) => {
       const changed = Number(mr.changes_count ?? 0) || 0;
+      const im = analyzeMr ? analyzeMr(mr) : null;
+      const routes = im?.routes?.length ?? 0;
+      const shared = im?.shared ?? 0;
+
+      // 路由数已经在 UI 上单独占了一个数字位，这里只说那个位置放不下的东西：
+      // 共享层波及程度、以及分析本身的局限。同一个数字不在同一行说两遍。
+      let note;
+      if (im?.analyzed) {
+        const parts = [];
+        if (routes === 0) parts.push('没有路由引用这些改动');
+        else if (shared > 0) parts.push(`${shared} 个改动被多条路由共用`);
+        parts.push(...(im.notes ?? []));
+        note = parts.join(' · ') || '未触及共享层';
+      } else {
+        note = `改动 ${changed} 个文件 · ${daysAgo(mr.updated_at, now)} 天未更新 · 影响面未分析`;
+      }
+
       return {
         id: String(mr.iid),
         title: mr.title,
         author: mr.author?.name ?? '未知',
         age: `${daysAgo(mr.created_at, now)} 天`,
-        routes: 0,
-        components: 0,
-        risk: riskOf(mr),
-        note: `改动 ${changed} 个文件 · ${daysAgo(mr.updated_at, now)} 天未更新`
+        routes,
+        components: shared,
+        risk: im?.analyzed ? im.risk : riskOf(mr),
+        note,
+        analyzed: Boolean(im?.analyzed),
+        impactedRoutes: im?.routes ?? [],
+        files: (im?.files ?? []).slice(0, 6)
       };
     });
 
@@ -180,7 +212,7 @@ export function buildSnapshot({ issues = [], mergeRequests = [], now = new Date(
     aligned,
     deviations,
     prs,
-    bugs: [],
-    health: []
+    bugs,
+    health
   };
 }

@@ -124,6 +124,46 @@ test('buildSnapshot 的 draft MR 不进待评审列表', () => {
   assert.equal(snap.prs[0].risk, 'high');
 });
 
+test('buildSnapshot：deviations 之外的三栏原样透传', () => {
+  const bugs = [{ id: 'BUG-1', count: 3, countLabel: '天未认领' }];
+  const health = [{ id: 'loc', name: '源码体量', value: '1.0k 行' }];
+  const snap = buildSnapshot({ issues: [], mergeRequests: [], now: NOW, bugs, health });
+  assert.deepEqual(snap.bugs, bugs);
+  assert.deepEqual(snap.health, health);
+});
+
+test('buildSnapshot：有影响面分析器就用真实路由数，没有就明说没分析', () => {
+  const mrs = [
+    {
+      iid: 5,
+      state: 'opened',
+      title: 'x',
+      author: { name: 'a' },
+      created_at: '2026-10-20',
+      updated_at: '2026-10-20',
+      changes_count: '3'
+    }
+  ];
+
+  const analyzed = buildSnapshot({
+    issues: [],
+    mergeRequests: mrs,
+    now: NOW,
+    analyzeMr: () => ({ analyzed: true, routes: ['/a', '/b'], shared: 1, risk: 'medium', files: ['x/y.tsx'], notes: [] })
+  });
+  assert.equal(analyzed.prs[0].routes, 2);
+  assert.equal(analyzed.prs[0].components, 1);
+  assert.equal(analyzed.prs[0].analyzed, true);
+  assert.equal(analyzed.prs[0].risk, 'medium');
+  assert.ok(analyzed.prs[0].note.includes('1 个改动被多条路由共用'), `实际 ${analyzed.prs[0].note}`);
+  assert.deepEqual(analyzed.prs[0].impactedRoutes, ['/a', '/b']);
+
+  const plain = buildSnapshot({ issues: [], mergeRequests: mrs, now: NOW });
+  assert.equal(plain.prs[0].analyzed, false);
+  assert.equal(plain.prs[0].routes, 0);
+  assert.ok(plain.prs[0].note.includes('影响面未分析'));
+});
+
 test('daysAgo 对坏数据不炸', () => {
   assert.equal(daysAgo(null, NOW), 0);
   assert.equal(daysAgo('not-a-date', NOW), 0);

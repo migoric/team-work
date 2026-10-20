@@ -22,13 +22,18 @@ struct TLDeskApp: App {
         WindowGroup {
             RootView()
                 .environmentObject(store)
-                .frame(minWidth: 920, minHeight: 620)
+                .frame(minWidth: 960, minHeight: 660)
         }
         .windowStyle(.hiddenTitleBar)
         .windowToolbarStyle(.unified(showsTitle: false))
-        .defaultSize(width: 1120, height: 740)
+        .windowResizability(.contentMinSize)
+        .defaultSize(width: 1180, height: 800)
         .commands {
             CommandGroup(replacing: .newItem) {}
+            CommandGroup(after: .toolbar) {
+                Button("重新读取快照") { store.reload() }
+                    .keyboardShortcut("r", modifiers: .command)
+            }
         }
     }
 }

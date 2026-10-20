@@ -63,6 +63,15 @@ export class GitLab {
     return this.paged(`/projects/${encodeURIComponent(projectId)}/merge_requests`, { state: 'opened', scope: 'all' });
   }
 
+  /** 只取路径信息，不取 diff 正文——影响面分析只需要知道改了哪些文件。 */
+  mergeRequestDiffs(projectId, iid) {
+    return this.paged(
+      `/projects/${encodeURIComponent(projectId)}/merge_requests/${iid}/diffs`,
+      { per_page: 100 },
+      300
+    );
+  }
+
   activeMilestones(projectId) {
     return this.paged(`/projects/${encodeURIComponent(projectId)}/milestones`, { state: 'active' });
   }

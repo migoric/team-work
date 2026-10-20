@@ -3,29 +3,44 @@
   "aligned": 6,
   "deviations": [
     {
-      "id": "DEV-201",
+      "id": "#482",
       "title": "订单详情页支持批量退款",
       "owner": "陈默",
       "ticket": "FE-2013",
       "planned": 80,
       "actual": 40,
       "evidence": [
-        "PR #482 仍是 draft，最后一次提交 3 天前",
-        "退款确认弹窗的 4 个分支只实现了 1 个",
-        "依赖的 /api/refund/batch 在后端仓库还没合并"
+        "偏差 −40 个百分点",
+        "任务清单 2/5 已勾选",
+        "MR !482 仍是 draft，最后更新 3 天前（6 条评论）",
+        "按时间轴，现在应完成 80%（到期 2026-10-23）"
       ]
     },
     {
-      "id": "DEV-207",
+      "id": "#491",
       "title": "会员中心改版 · 第二阶段",
       "owner": "林知",
       "ticket": "FE-2088",
       "planned": 90,
       "actual": 65,
       "evidence": [
-        "9 个页面已完成 6 个，剩余 3 个没有对应提交",
-        "设计稿 10 月 18 日更新到 v7，代码里仍是 v5 的间距",
-        "PR #491 等你评审，已经阻塞两天"
+        "偏差 −25 个百分点",
+        "任务清单 6/9 已勾选",
+        "MR !491 开着等评审，最后更新 2 天前（11 条评论）",
+        "按时间轴，现在应完成 90%（到期 2026-10-22）"
+      ]
+    },
+    {
+      "id": "#504",
+      "title": "全局搜索接入新排序",
+      "owner": "赵屿",
+      "ticket": "FE-2104",
+      "planned": 50,
+      "actual": 41,
+      "evidence": [
+        "偏差 −9 个百分点",
+        "任务清单 4/10 已勾选",
+        "差异在预期内，预计 1 天内追平"
       ]
     }
   ],
@@ -35,30 +50,146 @@
       "title": "feat: 批量退款确认流程",
       "author": "陈默",
       "age": "3 天",
-      "routes": 1,
+      "routes": 11,
       "components": 4,
       "risk": "high",
-      "note": "改到了共享的 Modal 与 Form 基座，影响 11 个页面"
+      "note": "4 个改动被多条路由共用",
+      "analyzed": true,
+      "impactedRoutes": ["/orders/[id]", "/orders/list", "/refund/confirm", "/refund/result", "/me/orders"],
+      "files": ["components/Modal.tsx", "components/Form.tsx", "orders/refund.tsx"]
+    },
+    {
+      "id": "491",
+      "title": "refactor: 会员中心抽离 skeleton",
+      "author": "林知",
+      "age": "2 天",
+      "routes": 9,
+      "components": 12,
+      "risk": "high",
+      "note": "12 个改动被多条路由共用，基本是整层重构",
+      "analyzed": true,
+      "impactedRoutes": ["/me", "/me/profile", "/me/vip", "/me/coupons"],
+      "files": ["components/Skeleton.tsx", "me/layout.tsx"]
+    },
+    {
+      "id": "487",
+      "title": "fix: 表格横向滚动抖动",
+      "author": "赵屿",
+      "age": "1 天",
+      "routes": 23,
+      "components": 0,
+      "risk": "medium",
+      "note": "只动了一个样式文件，未触及共享层",
+      "analyzed": true,
+      "impactedRoutes": ["/orders/list", "/inventory", "/reports"],
+      "files": ["styles/table.css"]
+    },
+    {
+      "id": "495",
+      "title": "chore: 升级 vite 5.4",
+      "author": "你",
+      "age": "6 小时",
+      "routes": 0,
+      "components": 0,
+      "risk": "medium",
+      "note": "改动 6 个文件 · 0 天未更新 · 影响面未分析",
+      "analyzed": false,
+      "impactedRoutes": [],
+      "files": []
     }
   ],
   "bugs": [
     {
-      "id": "BUG-88",
+      "id": "#312",
       "title": "移动端 Safari 下日期选择器不响应",
-      "occurrences": 14,
-      "firstSeen": "昨天 18:20",
-      "suspect": "a3f9c21 · #487"
+      "count": 4,
+      "countLabel": "天未认领",
+      "firstSeen": "4 天前",
+      "suspect": "待定位",
+      "attributed": false,
+      "unassigned": true
+    },
+    {
+      "id": "#318",
+      "title": "批量操作后列表未刷新",
+      "count": 2,
+      "countLabel": "天未认领",
+      "firstSeen": "昨天",
+      "suspect": "a3f9c21 · fix: 表格抖动",
+      "attributed": true,
+      "unassigned": true
+    },
+    {
+      "id": "#301",
+      "title": "暗色模式下图表轴线消失",
+      "count": 9,
+      "countLabel": "天未修",
+      "firstSeen": "9 天前",
+      "suspect": "7be0d44 · feat: 图表主题化",
+      "attributed": true,
+      "unassigned": false
+    },
+    {
+      "id": "#295",
+      "title": "头像加载偶发 403",
+      "count": 12,
+      "countLabel": "天未修",
+      "firstSeen": "12 天前",
+      "suspect": "疑似 CDN 策略，非代码",
+      "attributed": false,
+      "unassigned": false
     }
   ],
   "health": [
     {
-      "id": "js",
-      "name": "首屏 JS",
-      "value": "412 KB",
-      "delta": "+18 KB",
-      "ratio": 0.71,
+      "id": "bundle",
+      "name": "产物体积",
+      "value": "1.42 MB",
+      "delta": "+86.0 KB",
+      "ratio": 0.95,
       "worse": true,
-      "note": "主要来自新加的图表库"
+      "note": "dist/ 实际字节数，占预算 95%",
+      "history": [1.2, 1.24, 1.28, 1.31, 1.34, 1.42]
+    },
+    {
+      "id": "loc",
+      "name": "源码体量",
+      "value": "48.2k 行",
+      "delta": "+1.2k",
+      "ratio": 0.8,
+      "worse": true,
+      "note": "312 个文件，最大的是 pages/orders/list.tsx（812 行）",
+      "history": [42.0, 43.1, 44.8, 46.0, 47.0, 48.2]
+    },
+    {
+      "id": "unusedDeps",
+      "name": "未使用的直接依赖",
+      "value": "3 个",
+      "delta": "持平",
+      "ratio": 0.3,
+      "worse": false,
+      "note": "源码里一次都没 import：classnames、dayjs、query-string",
+      "history": [4, 4, 3, 3, 3, 3]
+    },
+    {
+      "id": "multiVersion",
+      "name": "重复版本依赖",
+      "value": "2 个",
+      "delta": "−1",
+      "ratio": 0.2,
+      "worse": false,
+      "note": "同一个包锁了多个版本：@types/react×2、safe-buffer×2",
+      "history": [3, 3, 3, 3, 2, 2]
+    },
+    {
+      "id": "deprecated",
+      "name": "废弃 API 面",
+      "value": "7 处",
+      "delta": "+3",
+      "ratio": 0.35,
+      "worse": true,
+      "note": "componentWillMount ×4 @ pages/me/index.tsx；.substr ×3 @ utils/format.ts",
+      "history": [4, 4, 5, 5, 4, 7]
     }
   ]
 }
