@@ -1,0 +1,64 @@
+{
+  "dateLabel": "10 月 21 日 · 周二",
+  "claimedOk": 6,
+  "deviations": [
+    {
+      "id": "DEV-201",
+      "title": "订单详情页支持批量退款",
+      "owner": "陈默",
+      "ticket": "FE-2013",
+      "claimed": 80,
+      "actual": 40,
+      "evidence": [
+        "PR #482 仍是 draft，最后一次提交 3 天前",
+        "退款确认弹窗的 4 个分支只实现了 1 个",
+        "依赖的 /api/refund/batch 在后端仓库还没合并"
+      ]
+    },
+    {
+      "id": "DEV-207",
+      "title": "会员中心改版 · 第二阶段",
+      "owner": "林知",
+      "ticket": "FE-2088",
+      "claimed": 90,
+      "actual": 65,
+      "evidence": [
+        "9 个页面已完成 6 个，剩余 3 个没有对应提交",
+        "设计稿 10 月 18 日更新到 v7，代码里仍是 v5 的间距",
+        "PR #491 等你评审，已经阻塞两天"
+      ]
+    }
+  ],
+  "prs": [
+    {
+      "id": "482",
+      "title": "feat: 批量退款确认流程",
+      "author": "陈默",
+      "age": "3 天",
+      "routes": 1,
+      "components": 4,
+      "risk": "high",
+      "note": "改到了共享的 Modal 与 Form 基座，影响 11 个页面"
+    }
+  ],
+  "bugs": [
+    {
+      "id": "BUG-88",
+      "title": "移动端 Safari 下日期选择器不响应",
+      "occurrences": 14,
+      "firstSeen": "昨天 18:20",
+      "suspect": "a3f9c21 · #487"
+    }
+  ],
+  "health": [
+    {
+      "id": "js",
+      "name": "首屏 JS",
+      "value": "412 KB",
+      "delta": "+18 KB",
+      "ratio": 0.71,
+      "worse": true,
+      "note": "主要来自新加的图表库"
+    }
+  ]
+}
