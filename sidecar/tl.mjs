@@ -23,7 +23,7 @@ import { dirname, join, resolve } from 'node:path';
 import { CONFIG_PATH, maskToken, readConfig, resolveAuth } from './lib/auth.mjs';
 import { ERROR_LOG_PATH, collectBugs, readErrorLog } from './lib/bugs.mjs';
 import { buildSnapshot } from './lib/facts.mjs';
-import { GitLab } from './lib/gitlab.mjs';
+import { GitLab, MERGED_MR_WINDOW_DAYS } from './lib/gitlab.mjs';
 import { collectHealth, formatBytes, formatCount } from './lib/health.mjs';
 import { createAnalyzer } from './lib/impact.mjs';
 import { reviewChanges, verdictLabel } from './lib/review.mjs';
@@ -167,6 +167,8 @@ function writeScanConfig({ host, projects, cred }, flags) {
   if (existsSync(CONFIG_PATH)) {
     backup = `${CONFIG_PATH}.bak`;
     copyFileSync(CONFIG_PATH, backup);
+    // 备份继承的是旧文件权限，旧文件可能是 0644 且含 token —— 备份同样收紧到 600
+    chmodSync(backup, 0o600);
   }
   writeFileSync(CONFIG_PATH, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   chmodSync(CONFIG_PATH, 0o600);
@@ -427,9 +429,23 @@ async function cmdAuth() {
   console.log(`host    ${auth.host}`);
   console.log(`token   ${maskToken(auth.token)}`);
   console.log(`来源    ${auth.source}`);
+  if (auth.warning) console.log(`⚠       ${auth.warning}`);
 
   const gl = new GitLab(auth);
-  const me = await gl.me();
+  let me;
+  try {
+    me = await gl.me();
+  } catch (err) {
+    if (auth.jobToken) {
+      // CI_JOB_TOKEN 不是 PAT：/user 这类全局接口它进不去，这不代表 token 无效。
+      // 如实说明能力边界，而不是报「token 无效或已过期」误导人去重建 token。
+      console.log(header('身份'));
+      console.log('CI_JOB_TOKEN 不支持 /user（job token 只覆盖流水线项目范围内的接口）。');
+      console.log('这不代表 token 无效 —— 有项目上下文时用 tl facts --project <path> 验证。');
+      return;
+    }
+    throw err;
+  }
   console.log(header('身份'));
   console.log(`登录为  ${me.name} (@${me.username})`);
   console.log(`权限    ${me.is_admin ? 'admin' : '普通用户'}`);
@@ -496,8 +512,17 @@ async function cmdFacts(flags) {
   const gl = new GitLab(auth);
   console.log(`采集 ${project} @ ${auth.host} …`);
 
-  const [issues, mergeRequests] = await Promise.all([gl.issues(project), gl.openMergeRequests(project)]);
-  console.log(`  issue ${issues.length} 条 · open MR ${mergeRequests.length} 个`);
+  // open MR 进待评审列表；已合并的只给 facts 兜底 —— issue 没写任务清单时，
+  // 「关联 MR 已合并」就是进度证据，只看 open 会把这种情况误报成零进度
+  const [issues, openedMrs, mergedMrs] = await Promise.all([
+    gl.issues(project),
+    gl.openMergeRequests(project),
+    gl.mergedMergeRequests(project)
+  ]);
+  const mergeRequests = [...openedMrs, ...mergedMrs];
+  console.log(
+    `  issue ${issues.length} 条 · open MR ${openedMrs.length} 个 · 近 ${MERGED_MR_WINDOW_DAYS} 天 merged MR ${mergedMrs.length} 个`
+  );
 
   let analyzer = null;
   if (!flags['no-impact']) {
@@ -541,7 +566,9 @@ async function cmdFacts(flags) {
 
   const out = resolve(flags.out ?? join(homedir(), '.tldesk', 'snapshot.json'));
   mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
+  // snapshot 不含 token，但含项目内部事实（issue / MR / 健康度），与 config 同一口径收紧到 600
+  writeFileSync(out, `${JSON.stringify(snapshot, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  chmodSync(out, 0o600);
 
   console.log(header('结果'));
   console.log(`进度偏差  ${snapshot.deviations.length} 条 · 对齐 ${snapshot.aligned} 条`);
@@ -652,7 +679,8 @@ function cmdReview(flags) {
     return {
       old_path: oldPath,
       new_path: newPath,
-      new_file: status === 'A',
+      // C（copy）在 name-status 里带两个路径：新路径是一份新出现的文件，按新增处理
+      new_file: status === 'A' || status.startsWith('C'),
       deleted_file: status === 'D',
       renamed_file: status.startsWith('R'),
       diff: body
@@ -688,6 +716,15 @@ function runGit(repo, args) {
   });
 }
 
+/** --stack 的二义性：「恰好同名的文本」不该被当文件读。无换行、长得像路径、且真实存在，三个都满足才按文件处理。 */
+function stackInputOf(value) {
+  if (typeof value !== 'string') return null;
+  if (value.includes('\n')) return value;
+  const looksPath = /[/\\]/.test(value) || /\.(log|txt|json|stack|trace)$/i.test(value);
+  if (looksPath && existsSync(resolve(value))) return readFileSync(resolve(value), 'utf8');
+  return value;
+}
+
 /** sourcemap 反查：线上位置 → 源码位置 → 最近改动它的 commit。 */
 function cmdTrace(flags) {
   const repo = resolve(flags.repo ?? process.cwd());
@@ -695,7 +732,7 @@ function cmdTrace(flags) {
 
   // --errors：把本地错误日志里带生成位置的条目一起反查，这是这条链路唯一有真实输入的入口
   if (flags.errors) {
-    const rows = readErrorLog(flags.path ?? ERROR_LOG_PATH).filter((e) => e.file || e.stack);
+    const rows = readErrorLog(flags.path ? resolve(flags.path) : ERROR_LOG_PATH).filter((e) => e.file || e.stack);
     console.log(header(`反查本地错误日志 ${rows.length} 条`));
     if (!rows.length) {
       console.log(`  没有可反查的条目（${ERROR_LOG_PATH}）。`);
@@ -713,7 +750,7 @@ function cmdTrace(flags) {
     return;
   }
 
-  const stack = typeof flags.stack === 'string' ? (existsSync(resolve(flags.stack)) ? readFileSync(resolve(flags.stack), 'utf8') : flags.stack) : null;
+  const stack = stackInputOf(flags.stack);
   const at = typeof flags.at === 'string' ? flags.at : null;
   if (!at && !stack) throw new Error('缺少 --at dist/app.js:1:48213 或 --stack <文件/文本>');
 
@@ -822,7 +859,7 @@ function usage() {
        [--no-verify]          不联网验证 token
        [--json]               输出 JSON（始终脱敏，给 UI 用）
        [--show-token]         终端里显示明文 token（默认脱敏）
-       [--all]                列出全部 GitLab 仓库（默认只列 8 个）
+       [--all]                列出全部 GitLab 仓库（默认只列 6 个）
   tl auth                     检查凭据与身份
   tl projects                 列出可见项目
   tl facts [--project <path>] 采集四个面板的数据并写出 snapshot.json
@@ -836,13 +873,17 @@ function usage() {
        [--report]             额外把这次读数追加成一行 JSONL（给 CI 上报用）
        [--path <file>]        默认 metrics/health.jsonl（相对仓库根）
        [--json]               只把这一行打到 stdout，不写文件
-  tl trend [--file <path> | --project <path> [--ref main]]
+  tl trend [--file <path> | --project <path> [--ref main] [--path <仓库内路径>]]
                               看 CI 上报的健康度趋势（逐指标给「一路变坏/持平」结论）
+                              --file 是本地 JSONL 文件的完整路径；
+                              --path 是仓库内的相对路径（默认 metrics/health.jsonl），
+                              配 --project 时从 GitLab 读，否则相对 --repo / 当前目录读本地文件
   tl review [--repo <dir>] [--base HEAD~1] [--head HEAD]
                               对本地两个 commit 之间的 diff 跑 CR 判据（不需要 GitLab）
   tl trace [--repo <dir>] --at dist/app.js:1:48213
                               用 sourcemap 把生成位置翻回源码，再查最近改动它的 commit
        [--stack <文件|文本>]  也可以直接喂一段报错栈
+                              （无换行、像路径且文件真实存在时按文件读，否则按文本）
        [--errors]             批量反查 ~/.tldesk/errors.jsonl
        [--map <file>]         手动指定 .map
   tl impact [--repo <dir>] --files a.tsx,b.tsx

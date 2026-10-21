@@ -140,9 +140,12 @@ struct Sidebar: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                    Text("\(store.updatedLabel)更新")
-                        .font(.system(size: 9))
-                        .foregroundStyle(.tertiary)
+                    // 文案粒度是分钟，30 秒刷一次足够；不挂定时器的话「刚刚」会挂一小时
+                    TimelineView(.periodic(from: .now, by: 30)) { _ in
+                        Text("\(store.updatedLabel)更新")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
                 }
                 Spacer(minLength: 2)
                 Button {

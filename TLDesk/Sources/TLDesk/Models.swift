@@ -1,5 +1,4 @@
 import Foundation
-import SwiftUI
 
 struct Deviation: Codable, Identifiable, Hashable {
     let id: String
@@ -26,16 +25,8 @@ struct ReviewCheck: Codable, Hashable, Identifiable {
     let level: String
     let title: String
     let detail: String
-    /// `path:line` 形式，必须能指到具体位置，否则这条不该被报出来
+    /// `path` 或 `path:line`：结构层判据（敏感路径、缺测试）只能给到裸路径，风险层能指到行号
     let evidence: [String]
-
-    var tint: Color {
-        switch level {
-        case "must": return Theme.bad
-        case "should": return Theme.warn
-        default: return Theme.accent
-        }
-    }
 
     init(id: String, level: String, title: String, detail: String, evidence: [String] = []) {
         self.id = id
@@ -47,11 +38,12 @@ struct ReviewCheck: Codable, Hashable, Identifiable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
         level = try c.decodeIfPresent(String.self, forKey: .level) ?? "may"
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
         detail = try c.decodeIfPresent(String.self, forKey: .detail) ?? ""
         evidence = try c.decodeIfPresent([String].self, forKey: .evidence) ?? []
+        // 缺 id 时用内容拼一个确定性值：UUID() 会让每次解码都换身份，展开动画被重放
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? "check.\(level).\(title)"
     }
 }
 
@@ -59,6 +51,20 @@ struct ReviewCounts: Codable, Hashable {
     let must: Int
     let should: Int
     let may: Int
+
+    init(must: Int, should: Int, may: Int) {
+        self.must = must
+        self.should = should
+        self.may = may
+    }
+
+    // 数字类型错了（比如 sidecar 写成了字符串）不该击穿整个 PullRequest 解码
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        must = (try? c.decodeIfPresent(Int.self, forKey: .must)) ?? 0
+        should = (try? c.decodeIfPresent(Int.self, forKey: .should)) ?? 0
+        may = (try? c.decodeIfPresent(Int.self, forKey: .may)) ?? 0
+    }
 }
 
 struct PullRequest: Codable, Identifiable, Hashable {
@@ -133,9 +139,10 @@ struct PullRequest: Codable, Identifiable, Hashable {
         analyzed = try c.decodeIfPresent(Bool.self, forKey: .analyzed) ?? false
         impactedRoutes = try c.decodeIfPresent([String].self, forKey: .impactedRoutes) ?? []
         files = try c.decodeIfPresent([String].self, forKey: .files) ?? []
-        checks = try c.decodeIfPresent([ReviewCheck].self, forKey: .checks)
-        verdict = try c.decodeIfPresent(String.self, forKey: .verdict)
-        reviewCounts = try c.decodeIfPresent(ReviewCounts.self, forKey: .reviewCounts)
+        // 嵌套对象整个类型不对（比如 reviewCounts 写成了字符串）时丢这一个字段，不拖垮整条 PR
+        checks = (try? c.decodeIfPresent([ReviewCheck].self, forKey: .checks)) ?? nil
+        verdict = (try? c.decodeIfPresent(String.self, forKey: .verdict)) ?? nil
+        reviewCounts = (try? c.decodeIfPresent(ReviewCounts.self, forKey: .reviewCounts)) ?? nil
     }
 }
 
@@ -255,14 +262,49 @@ struct Snapshot: Codable {
 }
 
 extension Snapshot {
-    /// 默认读 ~/.tldesk/snapshot.json；TLDESK_SNAPSHOT 可覆盖，方便拿另一份快照调试/出图。
-    static func load() -> Snapshot? {
+    /// 「文件不存在」和「存在但解码失败」是两种状态：前者回退样例，后者必须让用户看见。
+    enum LoadResult {
+        case ok(Snapshot)
+        case missing
+        case corrupt(String)
+    }
+
+    /// 实际读取的路径。TLDESK_SNAPSHOT 可覆盖，方便拿另一份快照调试/出图。
+    static var sourceURL: URL {
         let env = ProcessInfo.processInfo.environment["TLDESK_SNAPSHOT"]
-        let url = env.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+        return env.map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appendingPathComponent(".tldesk/snapshot.json")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(Snapshot.self, from: data)
+    }
+
+    /// 界面上显示用的路径（~ 缩写）。label 必须跟着实际读取路径走，不能写死。
+    static var sourcePathLabel: String {
+        (sourceURL.path as NSString).abbreviatingWithTildeInPath
+    }
+
+    static func load() -> LoadResult {
+        guard let data = try? Data(contentsOf: sourceURL) else { return .missing }
+        do {
+            return .ok(try JSONDecoder().decode(Snapshot.self, from: data))
+        } catch {
+            return .corrupt(describe(error))
+        }
+    }
+
+    /// DecodingError 的 localizedDescription 不说是哪个字段坏的，这里把出错位置翻出来
+    private static func describe(_ error: Error) -> String {
+        switch error {
+        case let DecodingError.keyNotFound(key, _):
+            return "缺字段 \(key.stringValue)"
+        case let DecodingError.typeMismatch(_, ctx):
+            return "字段 \(ctx.codingPath.map(\.stringValue).joined(separator: ".")) 类型不对"
+        case let DecodingError.valueNotFound(_, ctx):
+            return "字段 \(ctx.codingPath.map(\.stringValue).joined(separator: ".")) 缺值"
+        case let DecodingError.dataCorrupted(ctx):
+            return ctx.debugDescription.isEmpty ? "不是合法 JSON" : ctx.debugDescription
+        default:
+            return error.localizedDescription
+        }
     }
 }
 

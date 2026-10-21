@@ -12,8 +12,15 @@ enum OfflineRenderer {
     static func runIfRequested() {
         guard let idx = CommandLine.arguments.firstIndex(of: "--render") else { return }
         let args = CommandLine.arguments
-        let dir = idx + 1 < args.count ? args[idx + 1] : "./renders"
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        // 命令行里写的 ~ 不会有人帮你展开（没有 shell），这里自己做，否则静默写去一个名为 ~ 的目录
+        let rawDir = idx + 1 < args.count ? args[idx + 1] : "./renders"
+        let dir = (rawDir as NSString).expandingTildeInPath
+        do {
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        } catch {
+            print("✗ 建不了输出目录 \(dir)：\(error.localizedDescription)")
+            exit(1)
+        }
 
         var isDark = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
         var suffix = ""
@@ -50,8 +57,12 @@ enum OfflineRenderer {
                 continue
             }
             let path = "\(dir)/\(name)\(suffix).png"
-            try? image.write(to: URL(fileURLWithPath: path))
-            print("wrote \(path)")
+            do {
+                try image.write(to: URL(fileURLWithPath: path))
+                print("wrote \(path)")
+            } catch {
+                print("✗ 写 \(path) 失败：\(error.localizedDescription)")
+            }
         }
         exit(0)
     }

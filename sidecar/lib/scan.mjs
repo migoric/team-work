@@ -16,6 +16,8 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
+import { maskToken } from './redact.mjs';
+
 /** 常见放代码的地方。找不到就跳过，不报错。 */
 export const DEFAULT_ROOTS = [
   'Documents/projects',
@@ -485,12 +487,13 @@ export function scanCredentials({ home = homedir(), env = process.env, repos = [
   for (const rel of SHELL_FILES) {
     const text = readText(join(home, rel));
     if (!text) continue;
-    let host = null;
-    for (const item of parseShellExports(text)) {
-      if (item.name === 'GITLAB_HOST') {
-        host = item.value.replace(/^https?:\/\//, '').replace(/\/.*$/, '');
-        continue;
-      }
+    // 先收集再配对：TOKEN 写在 HOST 之前时，按行扫会把 host 丢掉。
+    // 同一文件里多次 export 同一个变量，按 shell 语义取最后生效的那个。
+    const items = parseShellExports(text);
+    const hostItem = [...items].reverse().find((i) => i.name === 'GITLAB_HOST');
+    const host = hostItem ? hostItem.value.replace(/^https?:\/\//, '').replace(/\/.*$/, '') : null;
+    for (const item of items) {
+      if (item.name === 'GITLAB_HOST') continue;
       push(found, { host, token: item.value, source: `~/${rel} 里的 ${item.name}` }, dedupe);
     }
   }
@@ -516,11 +519,9 @@ export function scanCredentials({ home = homedir(), env = process.env, repos = [
   return found;
 }
 
-/** 脱敏。任何要给人看的地方都必须过这个函数。 */
+/** 脱敏。任何要给人看的地方都必须过这个函数。实现只有一份，见 lib/redact.mjs。 */
 export function redactToken(token) {
-  if (!token) return '(无)';
-  if (token.length <= 10) return `${token.slice(0, 2)}…${token.length} 字符`;
-  return `${token.slice(0, 4)}…${token.slice(-4)}（${token.length} 字符）`;
+  return maskToken(token, { locale: 'zh' });
 }
 
 /**

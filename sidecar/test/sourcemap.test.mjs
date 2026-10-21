@@ -114,6 +114,29 @@ test('index map（sections）按偏移递归', () => {
   assert.equal(originalPositionFor(map, { line: 1, column: 1 }).line, 10);
 });
 
+test('index map 多 section 时取最后一个 offset ≤ 目标的分区（spec 语义）', () => {
+  const innerA = {
+    sources: ['src/a.ts'],
+    mappings: encodeMappings([[{ genCol: 0, srcIdx: 0, srcLine: 0, srcCol: 0 }]])
+  };
+  // 第二个 section 从生成行 100（0 起）开始，内部第 50 行（1 起）有映射
+  const rowsB = Array.from({ length: 49 }, () => []);
+  rowsB.push([{ genCol: 0, srcIdx: 0, srcLine: 41, srcCol: 0 }]);
+  const innerB = { sources: ['src/b.ts'], mappings: encodeMappings(rowsB) };
+  const map = {
+    sections: [
+      { offset: { line: 0, column: 0 }, map: innerA },
+      { offset: { line: 100, column: 0 }, map: innerB }
+    ]
+  };
+  // 生成行 150（1 起）= 第二个 section 的内部第 50 行 → src/b.ts 第 42 行
+  const hit = originalPositionFor(map, { line: 150, column: 1 });
+  assert.equal(hit.source, 'src/b.ts');
+  assert.equal(hit.line, 42);
+  // 第 1 行仍然命中第一个 section
+  assert.equal(originalPositionFor(map, { line: 1, column: 1 }).source, 'src/a.ts');
+});
+
 test('parseSourceMappingUrl 取最后一处', () => {
   const code = '//# sourceMappingURL=old.js.map\nx()\n//# sourceMappingURL=index.js.map';
   assert.equal(parseSourceMappingUrl(code), 'index.js.map');

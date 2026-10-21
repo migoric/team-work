@@ -171,3 +171,31 @@ test('parsePatches 标出 collapsed / too_large', () => {
   assert.equal(rows[0].collapsed, true);
   assert.equal(rows[0].tooLarge, true);
 });
+
+test('被 GitLab 折叠 / 超限的 diff 要成条明示，不能只说没命中判据', () => {
+  const r = reviewChanges([
+    { old_path: 'src/big.ts', new_path: 'src/big.ts', diff: '', collapsed: true },
+    { old_path: 'src/huge.ts', new_path: 'src/huge.ts', diff: '', too_large: true }
+  ]);
+  const hit = r.checks.find((c) => c.id === 'scope.collapsed');
+  assert.ok(hit, '折叠 / 超限必须成条报出来');
+  assert.match(hit.title, /2 个文件的 diff 被 GitLab 折叠/);
+  assert.deepEqual(hit.evidence, ['src/big.ts', 'src/huge.ts']);
+  assert.equal(r.totals.unscanned, 2);
+  assert.notEqual(verdictLabel(r), '没命中既定判据');
+});
+
+test('risk.secret 认 token 族键名，函数调用与普通字符串不误中', () => {
+  const diff = [
+    '@@ -1,0 +1,5 @@',
+    "+const token = 'abcdefgh12345678';",
+    "+const authToken = 'abcdefgh12345678';",
+    "+const private_token = 'abcdefgh12345678';",
+    '+const token = fetchToken();',
+    "+const note = 'token 只是普通字符串';"
+  ].join('\n');
+  const r = reviewChanges([patch(diff)]);
+  const hit = r.checks.find((c) => c.id === 'risk.secret');
+  assert.ok(hit);
+  assert.deepEqual(hit.evidence, ['src/a.tsx:1', 'src/a.tsx:2', 'src/a.tsx:3']);
+});

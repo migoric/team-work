@@ -17,7 +17,7 @@ struct ScanSheet: View {
             Divider().opacity(0.35)
             footer
         }
-        .frame(width: 780, height: 640)
+        .frame(width: 780, height: offline ? nil : 640)
         .background(Color(nsColor: .windowBackgroundColor))
         .onAppear { scanner.onCollected = { store.reload() } }
     }
@@ -205,14 +205,25 @@ struct ScanSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             if !scanner.output.isEmpty {
-                ScrollView {
-                    Text(scanner.output)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                Group {
+                    if offline {
+                        // ImageRenderer 不实体化 ScrollView 的内容，出图时走直排
+                        Text(scanner.output)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(.tertiary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        ScrollView {
+                            Text(scanner.output)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(.tertiary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .frame(maxHeight: 200)
+                    }
                 }
-                .frame(maxHeight: 200)
                 .padding(10)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.035)))
             }
@@ -255,7 +266,8 @@ struct ScanSheet: View {
                             canCollect: instance.credential != nil,
                             onCollect: { project in
                                 scanner.collect(project: project.path, repo: project.clones.first ?? "")
-                            }
+                            },
+                            onCancelCollect: { scanner.cancelCollect() }
                         )
                         .staggered(index)
                     }
@@ -337,9 +349,12 @@ struct ScanSheet: View {
         .cardSurface()
     }
 
-    /// 命令里给真实路径。让人手动替换 `<仓库>` 等于把定位问题丢回给用户。
+    /// 命令里给真实路径。让人手动替换 `<仓库>` 等于把定位问题丢回给用户；
+    /// 找不到 sidecar 时也不编造路径，如实说「到 sidecar 目录里跑」。
     private func sidecarCommand(_ args: String = "scan") -> String {
-        let path = Scanner.locateSidecar()?.path ?? "~/Documents/projects/team-work/sidecar"
+        guard let path = Scanner.locateSidecar()?.path else {
+            return "cd <sidecar 目录> && node tl.mjs \(args)"
+        }
         return "cd \((path as NSString).abbreviatingWithTildeInPath) && node tl.mjs \(args)"
     }
 
@@ -360,7 +375,7 @@ struct ScanSheet: View {
                         .foregroundStyle(.secondary)
                 }
             } else if scanner.phase == .idle {
-                Text("扫描结果只写 ~/.tldesk/scan.json，里面不含 token。")
+                Text("扫描结果只写 \((Scanner.reportPath.path as NSString).abbreviatingWithTildeInPath)，里面不含 token。")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)
             }
@@ -377,6 +392,7 @@ private struct InstanceCard: View {
     let collecting: String?
     let canCollect: Bool
     let onCollect: (Instance.Project) -> Void
+    let onCancelCollect: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -409,7 +425,8 @@ private struct InstanceCard: View {
                     project: project,
                     busy: collecting == project.path,
                     enabled: canCollect && collecting == nil,
-                    onCollect: { onCollect(project) }
+                    onCollect: { onCollect(project) },
+                    onCancel: onCancelCollect
                 )
             }
         }
@@ -437,6 +454,7 @@ private struct ProjectRow: View {
     let busy: Bool
     let enabled: Bool
     let onCollect: () -> Void
+    let onCancel: () -> Void
 
     @State private var hovering = false
 
@@ -472,7 +490,13 @@ private struct ProjectRow: View {
 
             Group {
                 if busy {
-                    ProgressView().controlSize(.small)
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.small)
+                        Button("取消", action: onCancel)
+                            .buttonStyle(.plain)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
                 } else {
                     Button("采集", action: onCollect)
                         .glassButton()

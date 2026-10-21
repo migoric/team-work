@@ -209,7 +209,12 @@ let entries: [(name: String, px: Int)] = [
     ("icon_512x512@2x.png", 1024)
 ]
 
-try? FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
+do {
+    try FileManager.default.createDirectory(atPath: outDir, withIntermediateDirectories: true)
+} catch {
+    print("✗ 建不了输出目录 \(outDir)：\(error.localizedDescription)")
+    exit(1)
+}
 var cache: [Int: Data] = [:]
 for entry in entries {
     let data: Data
@@ -222,6 +227,11 @@ for entry in entries {
         cache[entry.px] = png
         data = png
     }
-    try! data.write(to: URL(fileURLWithPath: "\(outDir)/\(entry.name)"))
+    do {
+        try data.write(to: URL(fileURLWithPath: "\(outDir)/\(entry.name)"))
+    } catch {
+        print("✗ 写 \(outDir)/\(entry.name) 失败：\(error.localizedDescription)")
+        exit(1)
+    }
 }
 print("wrote \(entries.count) png → \(outDir)")

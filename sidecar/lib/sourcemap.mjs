@@ -102,11 +102,14 @@ function tableOf(map) {
 export function originalPositionFor(map, { line, column = 1 } = {}) {
   if (!map) return null;
 
-  // index map：按偏移量找到分区，再递归
+  // index map：按偏移量找到分区，再递归。
+  // spec 要求取**最后一个** offset ≤ 目标的分区（sections 按偏移升序排列，
+  // 从头遍历会命中第一个，多 section 时把整个后半包都翻错）。
   if (Array.isArray(map.sections)) {
     const genLine = line - 1;
     const genCol = column - 1;
-    for (const section of map.sections) {
+    for (let i = map.sections.length - 1; i >= 0; i -= 1) {
+      const section = map.sections[i];
       const offLine = section?.offset?.line ?? 0;
       const offCol = section?.offset?.column ?? 0;
       if (genLine < offLine) continue;

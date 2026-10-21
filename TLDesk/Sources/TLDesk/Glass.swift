@@ -161,24 +161,6 @@ private struct PillModifier: ViewModifier {
     }
 }
 
-private struct InlineGlassModifier: ViewModifier {
-    @Environment(\.offlineRender) private var offline
-    var radius: CGFloat
-    var tint: Color?
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if offline {
-            content.background(
-                RoundedRectangle(cornerRadius: radius, style: .continuous)
-                    .fill((tint ?? Theme.accent).opacity(0.16))
-            )
-        } else {
-            content.glassEffect(.regular.tint((tint ?? .clear).opacity(0.55)).interactive(), in: .rect(cornerRadius: radius))
-        }
-    }
-}
-
 extension View {
     func cardSurface(hovering: Bool = false, radius: CGFloat = Theme.cardRadius, glass: Bool = false) -> some View {
         modifier(CardModifier(hovering: hovering, radius: radius, glass: glass))
@@ -186,10 +168,6 @@ extension View {
 
     func pillSurface() -> some View {
         modifier(PillModifier())
-    }
-
-    func inlineGlass(radius: CGFloat = Theme.pillRadius, tint: Color? = nil) -> some View {
-        modifier(InlineGlassModifier(radius: radius, tint: tint))
     }
 
     /// 玻璃按钮。离屏出图时必须退成系统按钮 —— ImageRenderer 画不出玻璃材质，

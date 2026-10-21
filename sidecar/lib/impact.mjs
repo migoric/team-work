@@ -18,11 +18,17 @@ const SKIP_DIRS = new Set([
   '.turbo', '.cache', '.output', 'target', 'storybook-static', '.venv', 'vendor'
 ]);
 
-/** 递归列出仓库里的源码文件（相对 posix 路径）。跳过产物与依赖目录。 */
-export function walk(root, { maxFiles = 20000 } = {}) {
+/** 递归列出仓库里的源码文件（相对 posix 路径）。跳过产物与依赖目录。
+ *  撞 maxFiles 上限时置 meta.truncated，让调用方能明说「结果偏小」，而不是静默截断。 */
+export function walk(root, { maxFiles = 20000, meta = null } = {}) {
   const out = [];
+  let truncated = false;
   const stack = [''];
-  while (stack.length && out.length < maxFiles) {
+  while (stack.length) {
+    if (out.length >= maxFiles) {
+      truncated = true;
+      break;
+    }
     const rel = stack.pop();
     let entries;
     try {
@@ -41,9 +47,16 @@ export function walk(root, { maxFiles = 20000 } = {}) {
       }
       const dot = e.name.lastIndexOf('.');
       const ext = dot > 0 ? e.name.slice(dot) : '';
-      if (CODE_EXT.includes(ext) || STYLE_EXT.includes(ext)) out.push(child);
+      if (CODE_EXT.includes(ext) || STYLE_EXT.includes(ext)) {
+        if (out.length >= maxFiles) {
+          truncated = true;
+          continue;
+        }
+        out.push(child);
+      }
     }
   }
+  if (meta && truncated) meta.truncated = true;
   return out;
 }
 
@@ -61,15 +74,36 @@ function looseJson(text) {
 }
 
 /**
+ * 读一份 tsconfig/jsconfig，沿相对路径的 extends 链向上合并（深的覆盖浅的）。
+ * 只追相对路径：extends 是包名（@tsconfig/xxx）时本地解析不了，跳过不猜。
+ * 深度封顶防循环引用。
+ */
+function readTsConfig(root, name, depth = 0) {
+  const p = join(root, name);
+  if (depth > 5 || !existsSync(p)) return null;
+  const raw = looseJson(readFileSync(p, 'utf8'));
+  if (!raw) return null;
+  const ext = raw.extends;
+  if (typeof ext === 'string' && (ext.startsWith('./') || ext.startsWith('../'))) {
+    const rel = ext.endsWith('.json') ? ext : `${ext}.json`;
+    const parent = readTsConfig(root, posix.join(posix.dirname(name), rel), depth + 1);
+    if (parent) {
+      // 与 tsc 语义一致：paths / baseUrl 这类键是整体替换，不是逐条合并
+      return { ...parent, ...raw, compilerOptions: { ...parent.compilerOptions, ...raw.compilerOptions } };
+    }
+  }
+  return raw;
+}
+
+/**
  * 读 tsconfig 的路径别名，例如 `@/* -> ./src/*`。
  * 返回 [{ prefix, targets }]，按 prefix 长度降序（长的先匹配）。
  */
 export function parseAliases(root) {
   for (const name of ['tsconfig.json', 'jsconfig.json']) {
-    const p = join(root, name);
-    if (!existsSync(p)) continue;
-    const raw = looseJson(readFileSync(p, 'utf8'));
-    const opts = raw?.compilerOptions;
+    const raw = readTsConfig(root, name);
+    if (!raw) continue;
+    const opts = raw.compilerOptions;
     if (!opts) continue;
     const baseUrl = (opts.baseUrl ?? '.').replace(/^\.\//, '').replace(/\/$/, '');
     const paths = opts.paths ?? {};
@@ -235,7 +269,10 @@ export function detectRoutes(files) {
         const dir = m[1] ?? '';
         routes.push({ path: toPath(dir.split('/')), file });
       } else {
-        if (/^_/.test(rest) || /^api\//.test(rest)) continue;
+        // pages/ 下任何一段以 _ 开头都不是路由（_app / _document / _partial 目录同理），
+        // 以前只排首段，pages/blog/_draft.tsx 这种会被误当路由
+        if (rest.split('/').some((s) => s.startsWith('_'))) continue;
+        if (/^api\//.test(rest)) continue;
         if (/^(404|500)\./.test(rest)) continue;
         const m = rest.match(PAGES_FILE);
         if (!m) continue;
@@ -263,12 +300,17 @@ export function impactOf(changedFiles, { importers, routes }, { limit = 4000 } =
   const routeByFile = new Map(routes.map((r) => [r.file, r.path]));
   const touched = [];
   let visited = 0;
+  let truncated = false;
 
   for (const file of changedFiles) {
     const hit = new Set();
     const queue = [file];
     const seen = new Set([file]);
-    while (queue.length && visited < limit) {
+    while (queue.length) {
+      if (visited >= limit) {
+        truncated = true;
+        break;
+      }
       const cur = queue.shift();
       visited += 1;
       if (routeByFile.has(cur)) hit.add(routeByFile.get(cur));
@@ -292,7 +334,8 @@ export function impactOf(changedFiles, { importers, routes }, { limit = 4000 } =
     routes: [...allRoutes].sort(),
     shared,
     perFile: touched,
-    visited
+    visited,
+    truncated
   };
 }
 
@@ -305,7 +348,8 @@ export function createAnalyzer(root) {
   if (!root || !existsSync(root) || !statSync(root).isDirectory()) {
     return null;
   }
-  const files = walk(root);
+  const walkMeta = { truncated: false };
+  const files = walk(root, { meta: walkMeta });
   if (files.length === 0) return null;
   const aliases = parseAliases(root);
   const graph = buildGraph(root, files, aliases);
@@ -324,15 +368,24 @@ export function createAnalyzer(root) {
       const missing = changed.filter((f) => !fileSet.has(f));
       const hit = impactOf(present, { importers: graph.importers, routes });
       const score = riskScore({ routes: hit.routes, shared: hit.shared, files: present });
+      // 截断与缺失都明说：撞了上限的结果偏小，不能被误诊成「分支不一致」
+      const notes = [];
+      if (missing.length) {
+        notes.push(`${missing.length} 个改动路径不在本地仓库里（分支不一致？）——这部分没算进影响面`);
+      }
+      if (walkMeta.truncated) {
+        notes.push(`仓库索引撞了 ${files.length} 个文件的上限，影响面结果偏小（只覆盖前 ${files.length} 个文件）`);
+      }
+      if (hit.truncated) {
+        notes.push('反向遍历撞了节点数上限（4000），影响面结果偏小 —— 路由与共享组件可能没爬全');
+      }
       return {
         ...hit,
         analyzed: true,
         missing,
         score,
         risk: riskOf(score),
-        notes: missing.length
-          ? [`${missing.length} 个改动路径不在本地仓库里（分支不一致？）——这部分没算进影响面`]
-          : []
+        notes
       };
     }
   };

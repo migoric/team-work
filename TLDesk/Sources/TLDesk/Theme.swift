@@ -24,15 +24,6 @@ enum Panel: String, CaseIterable, Identifiable, Hashable {
         }
     }
 
-    var caption: String {
-        switch self {
-        case .progress: return "计划 vs 代码事实"
-        case .review: return "这次改动会炸到哪里"
-        case .bugs: return "被忽略了多久"
-        case .health: return "只跟上一版自己比"
-        }
-    }
-
     var tint: Color {
         switch self {
         case .progress: return Theme.bad
@@ -50,7 +41,34 @@ enum Theme {
     static let good = Color.adaptive(light: 0x157F58, dark: 0x4CD79F)
 
     static let cardRadius: CGFloat = 16
-    static let pillRadius: CGFloat = 9
+
+    /// 展示分级阈值：只决定「怎么显示」（配色档位、截断长度、排序加分）。
+    /// 过滤与判定阈值只在 sidecar 里定义一次，这里一个都别加。
+    enum Threshold {
+        /// 进度偏差 ≤ 它：真问题，红色
+        static let deviationBad = -30
+        /// 进度偏差 ≤ 它：要留意，橙色；再小的偏差用中性灰
+        static let deviationWarn = -12
+        /// bug 的 count 是「天」语义时，≥ 它算严重
+        static let bugSevereDays = 7
+        /// bug 年龄条满格对应的天数
+        static let bugAgeBarFull = 14
+        /// 标签流最多显示几个，超出截断
+        static let chipLimit = 14
+        /// 「先看它」排序里路由数的封顶加分：无界的 +routes 会让路由多的 medium 压过 high
+        static let routeScoreCap = 40
+    }
+}
+
+extension ReviewCheck {
+    /// 判据级别的配色。放这里而不是模型文件里：Models 不依赖 SwiftUI。
+    var tint: Color {
+        switch level {
+        case "must": return Theme.bad
+        case "should": return Theme.warn
+        default: return Theme.accent
+        }
+    }
 }
 
 extension Color {
