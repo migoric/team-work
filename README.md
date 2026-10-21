@@ -96,6 +96,8 @@ node tl.mjs scan --write             # 把选中的 host/token/项目写进 conf
 node tl.mjs scan --json              # 给 GUI / 脚本，始终脱敏
 ```
 
+![扫描](docs/scan.png)
+
 几个刻意的选择：
 
 - **钥匙串默认不读。** 那会弹系统授权框并挂住进程，必须由人显式触发
