@@ -16,10 +16,11 @@ struct ProgressPanel: View {
                 : "\(items.count) 条落后 · \(store.snapshot.aligned) 条与时间轴一致"
         ) {
             HeroCard(
-                ringValue: Double(store.worstDeviation?.actual ?? 100) / 100,
-                ringTick: Double(store.worstDeviation?.planned ?? 100) / 100,
+                // 没有偏差时「一切正常」不该是一只红色满环：0 值 + 中性色
+                ringValue: store.worstDeviation == nil ? 0 : Double(store.worstDeviation?.actual ?? 0) / 100,
+                ringTick: store.worstDeviation == nil ? nil : Double(store.worstDeviation?.planned ?? 0) / 100,
                 ringCaption: store.worstDeviation == nil ? nil : "最落后的一条",
-                tint: Theme.bad,
+                tint: store.worstDeviation == nil ? Color.secondary : Theme.bad,
                 headline: heroHeadline,
                 detail: "环里的那根刻度是计划进度。计划看时间轴，事实看任务清单与关联 MR——两个都是算出来的，不需要谁去填表。",
                 stats: [
@@ -60,8 +61,8 @@ struct DeviationCard: View {
 
     /// 三档，不是一档。全都刷成红的那天起，红色就不再有信息量。
     private var severity: Color {
-        if item.delta <= -30 { return Theme.bad }
-        if item.delta <= -12 { return Theme.warn }
+        if item.delta <= Theme.Threshold.deviationBad { return Theme.bad }
+        if item.delta <= Theme.Threshold.deviationWarn { return Theme.warn }
         return Color.primary.opacity(0.45)
     }
 
@@ -187,20 +188,32 @@ struct ReviewPanel: View {
 
     private var heroHeadline: String {
         if prs.isEmpty { return "队列是空的" }
-        // 有「必看」判据的优先：那是 diff 里能指到行号的东西，比路由数更该先看
-        if let worst = prs.first(where: { ($0.reviewCounts?.must ?? 0) > 0 }), let n = worst.reviewCounts?.must {
+        // 有「必看」判据的优先：那是 diff 里能指到行号的东西，比路由数更该先看。
+        // sidecar 按 changes_count 排序，不代表 must 最多 —— 这里自己按 must 降序挑。
+        let mustFirst = prs
+            .filter { ($0.reviewCounts?.must ?? 0) > 0 }
+            .max { ($0.reviewCounts?.must ?? 0) < ($1.reviewCounts?.must ?? 0) }
+        if let worst = mustFirst, let n = worst.reviewCounts?.must {
             return "!\(worst.id) 有 \(n) 条必看判据，先看它"
         }
-        // 再按风险、路由数：路由多但没动共享层的，不该排在动了基座的前面
-        let ranked = prs.filter(\.analyzed).sorted {
-            let lhs = ($0.risk == .high ? 100 : $0.risk == .medium ? 10 : 0) + $0.routes
-            let rhs = ($1.risk == .high ? 100 : $1.risk == .medium ? 10 : 0) + $1.routes
-            return lhs > rhs
-        }
+        // 再按排序分：判据级别 must > should > may 分层，层内按风险档，路由数只给封顶加分。
+        // 无界的 +routes 会让「路由很多的 medium」压过 high（踩过）。
+        let ranked = prs.filter(\.analyzed).sorted { rankScore($0) > rankScore($1) }
         if let heaviest = ranked.first {
             return "!\(heaviest.id)「\(heaviest.title)」会影响 \(heaviest.routes) 条路由，先看它"
         }
         return "\(prs.count) 个 PR 在等你，其中 \(store.analyzedPRs) 个算过影响面"
+    }
+
+    private func rankScore(_ pr: PullRequest) -> Int {
+        let level: Int
+        if let c = pr.reviewCounts {
+            if c.must > 0 { level = 3000 } else if c.should > 0 { level = 2000 } else { level = 1000 }
+        } else {
+            level = 0
+        }
+        let risk = pr.risk == .high ? 100 : pr.risk == .medium ? 50 : 0
+        return level + risk + min(pr.routes, Theme.Threshold.routeScoreCap)
     }
 }
 
@@ -208,6 +221,12 @@ struct PRRow: View {
     let pr: PullRequest
     @State private var hovering = false
     @State private var expanded = false
+
+    /// 有路由或有 CR 判据都算「有东西可展开」。chevron 和点按守卫必须用同一个条件，
+    /// 否则「有 must 判据但没路由」的 PR 点了能展开、却没有任何可展开的暗示。
+    private var hasDetail: Bool {
+        !pr.impactedRoutes.isEmpty || !(pr.checks ?? []).isEmpty
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -235,7 +254,7 @@ struct PRRow: View {
                             .padding(.trailing, 2)
                         }
                         Pill(text: pr.risk.label, tint: pr.risk.tint)
-                        if pr.analyzed && !pr.impactedRoutes.isEmpty {
+                        if pr.analyzed && hasDetail {
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 9, weight: .bold))
                                 .foregroundStyle(.tertiary)
@@ -272,7 +291,8 @@ struct PRRow: View {
                                 CheckLine(check: check)
                             }
                             if checks.count > 6 {
-                                Text("还有 \(checks.count - 6) 条（看 tl review 的完整输出）")
+                                // tl review 跑的是本地 diff，不切到那个分支复现不了，别指使人去跑
+                                Text("还有 \(checks.count - 6) 条，完整列表在 ~/.tldesk/snapshot.json 里")
                                     .font(.system(size: 9.5))
                                     .foregroundStyle(.tertiary)
                             }
@@ -306,7 +326,6 @@ struct PRRow: View {
         .cardSurface(hovering: hovering)
         .contentShape(Rectangle())
         .onTapGesture {
-            let hasDetail = !pr.impactedRoutes.isEmpty || !(pr.checks ?? []).isEmpty
             guard pr.analyzed && hasDetail else { return }
             withAnimation(Motion.expand) { expanded.toggle() }
         }
@@ -315,10 +334,18 @@ struct PRRow: View {
         }
     }
 
-    /// 结论只由 sidecar 给的 counts 决定，UI 不重新判。
+    /// 结论只由 sidecar 给的 counts / verdict 决定，UI 不重新判。
     private var reviewPill: (text: String, tint: Color)? {
         guard pr.analyzed else { return nil }
-        guard let c = pr.reviewCounts else { return ("CR 未检查", Color.secondary) }
+        guard let c = pr.reviewCounts else {
+            // 没有明细 counts 但有归并结论时，如实显示结论，别装成「没查过」
+            switch pr.verdict {
+            case "must": return ("结论：必看", Theme.bad)
+            case "should": return ("结论：建议看", Theme.warn)
+            case "may": return ("结论：无必看项", Theme.accent)
+            default: return ("CR 未检查", Color.secondary)
+            }
+        }
         if c.must > 0 { return ("必看 \(c.must)", Theme.bad) }
         if c.should > 0 { return ("建议看 \(c.should)", Theme.warn) }
         return ("没命中判据", Color.secondary)
@@ -362,7 +389,8 @@ struct FlowChips: View {
 
     var body: some View {
         FlowLayout(spacing: 5, lineSpacing: 5) {
-            ForEach(items.prefix(14), id: \.self) { item in
+            // id 用索引不用内容：重复路径在 id: \.self 下会产生重复 id
+            ForEach(Array(items.prefix(Theme.Threshold.chipLimit).enumerated()), id: \.offset) { _, item in
                 Text(item)
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
                     .padding(.horizontal, 6)
@@ -435,14 +463,16 @@ struct BugsPanel: View {
                 : "\(bugs.count) 条 · \(store.unassignedBugs) 条没人认领"
         ) {
             HeroCard(
-                ringValue: bugs.isEmpty ? 1 : Double(store.unassignedBugs) / Double(bugs.count),
+                // 空栏不该是一只橙色满环：0 值 + 中性色
+                ringValue: bugs.isEmpty ? 0 : Double(store.unassignedBugs) / Double(bugs.count),
                 ringCaption: "未认领占比",
-                tint: Theme.warn,
+                tint: bugs.isEmpty ? Color.secondary : Theme.warn,
                 headline: heroHeadline,
                 detail: "数字的含义取决于数据源：接了本地错误日志才是「出现次数」，只有 GitLab 时就是「已经开了多少天、有没有人认领」。",
                 stats: [
                     HeroStat(value: "\(store.unassignedBugs)", label: "条未认领"),
-                    HeroStat(value: "\(bugs.filter(\.unassigned).map(\.count).max() ?? 0) 天", label: "最久没人管")
+                    // 只有「天」语义的 count 能当年龄讲；接上监控后它是出现次数
+                    HeroStat(value: oldestUnassignedDays.map { "\($0) 天" } ?? "—", label: "最久没人管")
                 ]
             )
             .staggered(0)
@@ -463,10 +493,19 @@ struct BugsPanel: View {
         }
     }
 
+    /// 最久的未认领 bug 开了几天。countLabel 以「天」开头的才是年龄（对齐 BugRow 的语义），
+    /// 接上错误监控后 count 是出现次数，不能当天数讲。
+    private var oldestUnassignedDays: Int? {
+        bugs.filter { $0.unassigned && $0.countLabel.hasPrefix("天") }.map(\.count).max()
+    }
+
     private var heroHeadline: String {
         if bugs.isEmpty { return "没有待处理的线上问题" }
         if store.unassignedBugs > 0 {
-            return "\(store.unassignedBugs) 条没人认领，最久的一条已经开了 \(bugs.filter(\.unassigned).map(\.count).max() ?? 0) 天"
+            if let days = oldestUnassignedDays {
+                return "\(store.unassignedBugs) 条没人认领，最久的一条已经开了 \(days) 天"
+            }
+            return "\(store.unassignedBugs) 条没人认领"
         }
         return "\(bugs.count) 条都有人认领了"
     }
@@ -476,7 +515,7 @@ struct BugRow: View {
     let bug: BugItem
     @State private var hovering = false
 
-    private var severe: Bool { bug.unassigned || bug.count >= 7 }
+    private var severe: Bool { bug.unassigned || bug.count >= Theme.Threshold.bugSevereDays }
 
     var body: some View {
         HStack(alignment: .center, spacing: 13) {
@@ -517,7 +556,7 @@ struct BugRow: View {
             if bug.countLabel.hasPrefix("天") {
                 VStack(alignment: .trailing, spacing: 5) {
                     RevealBar(
-                        ratio: min(1, Double(bug.count) / 14),
+                        ratio: min(1, Double(bug.count) / Double(Theme.Threshold.bugAgeBarFull)),
                         tint: severe ? Theme.bad : Theme.warn,
                         height: 3.5
                     )
@@ -553,9 +592,10 @@ struct HealthPanel: View {
                 : "\(store.worsened) 项比上一版变坏"
         ) {
             HeroCard(
-                ringValue: metrics.isEmpty ? 1 : Double(metrics.count - store.worsened) / Double(metrics.count),
+                // 空态不该是一只绿色满环：0 值 + 中性色
+                ringValue: metrics.isEmpty ? 0 : Double(metrics.count - store.worsened) / Double(metrics.count),
                 ringCaption: "未见退化的占比",
-                tint: Theme.good,
+                tint: metrics.isEmpty ? Color.secondary : Theme.good,
                 headline: heroHeadline,
                 detail: "每个数字只和上一版自己比，不和其他团队比。变坏的那一条会同时告诉你是哪个文件、哪个包带来的。",
                 stats: [
@@ -621,7 +661,8 @@ struct HealthRow: View {
 
             Spacer(minLength: 10)
 
-            if metric.history.count > 1 {
+            // 只有一次读数也画（一个点），与「只有一次就画点，不画假趋势」的约定一致
+            if !metric.history.isEmpty {
                 Sparkline(values: metric.history, tint: tint)
                     .frame(width: 56, height: 18)
             }

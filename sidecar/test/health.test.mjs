@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -126,4 +128,26 @@ test('ratio 被夹在 0…1，UI 的进度条不会画出界', () => {
   for (const m of out) {
     assert.ok(m.ratio >= 0 && m.ratio <= 1, `${m.id} ratio=${m.ratio}`);
   }
+});
+
+test('lockfile 存在但格式不支持时明说「存在但不支持」，不说成「没有」', () => {
+  // npm v1 的 lockfile：没有 packages 段
+  const v1 = mkdtempSync(join(tmpdir(), 'tl-health-'));
+  writeFileSync(join(v1, 'package.json'), JSON.stringify({ dependencies: {} }));
+  writeFileSync(join(v1, 'package-lock.json'), JSON.stringify({ lockfileVersion: 1, dependencies: { ms: { version: '2.0.0' } } }));
+  const r1 = measure(v1);
+  assert.ok(r1.skipped.some((s) => s.includes('不是支持的格式')), `实际 ${JSON.stringify(r1.skipped)}`);
+
+  // pnpm / yarn 的 lockfile：存在但暂不解析
+  const pnpm = mkdtempSync(join(tmpdir(), 'tl-health-'));
+  writeFileSync(join(pnpm, 'package.json'), JSON.stringify({ dependencies: {} }));
+  writeFileSync(join(pnpm, 'pnpm-lock.yaml'), 'lockfileVersion: 9\n');
+  const r2 = measure(pnpm);
+  assert.ok(r2.skipped.some((s) => s.includes('pnpm-lock.yaml')), `实际 ${JSON.stringify(r2.skipped)}`);
+
+  // 真没有 lockfile 时才说「没有」
+  const none = mkdtempSync(join(tmpdir(), 'tl-health-'));
+  writeFileSync(join(none, 'package.json'), JSON.stringify({ dependencies: {} }));
+  const r3 = measure(none);
+  assert.ok(r3.skipped.some((s) => s.includes('没有 package-lock.json')), `实际 ${JSON.stringify(r3.skipped)}`);
 });

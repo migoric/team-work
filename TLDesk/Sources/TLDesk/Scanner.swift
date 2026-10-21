@@ -2,10 +2,23 @@ import Foundation
 import SwiftUI
 
 /// 一次本机扫描的结果。字段与 sidecar 的 ~/.tldesk/scan.json 一一对应。
+/// 全部字段手写容错解码：sidecar 加字段、改字段时，旧 app 应该退化着显示，
+/// 而不是整份报告读不出来、装成「没扫过」。
 struct ScanReport: Codable {
     struct Roots: Codable {
         let existing: [String]
         let missing: [String]
+
+        init(existing: [String] = [], missing: [String] = []) {
+            self.existing = existing
+            self.missing = missing
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            existing = (try? c.decodeIfPresent([String].self, forKey: .existing)) ?? []
+            missing = (try? c.decodeIfPresent([String].self, forKey: .missing)) ?? []
+        }
     }
 
     struct Credential: Codable {
@@ -14,6 +27,15 @@ struct ScanReport: Codable {
         let masked: String
         let verified: Bool?
         let username: String?
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            host = (try? c.decodeIfPresent(String.self, forKey: .host)) ?? nil
+            source = (try? c.decodeIfPresent(String.self, forKey: .source)) ?? ""
+            masked = (try? c.decodeIfPresent(String.self, forKey: .masked)) ?? ""
+            verified = (try? c.decodeIfPresent(Bool.self, forKey: .verified)) ?? nil
+            username = (try? c.decodeIfPresent(String.self, forKey: .username)) ?? nil
+        }
     }
 
     struct Repo: Codable, Identifiable {
@@ -30,6 +52,22 @@ struct ScanReport: Codable {
         let signals: [String]
         let probeNote: String?
         let credential: Credential?
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            path = (try? c.decodeIfPresent(String.self, forKey: .path)) ?? ""
+            name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
+            host = (try? c.decodeIfPresent(String.self, forKey: .host)) ?? ""
+            projectPath = (try? c.decodeIfPresent(String.self, forKey: .projectPath)) ?? ""
+            remote = (try? c.decodeIfPresent(String.self, forKey: .remote)) ?? ""
+            branch = (try? c.decodeIfPresent(String.self, forKey: .branch)) ?? nil
+            lastCommit = (try? c.decodeIfPresent(String.self, forKey: .lastCommit)) ?? nil
+            age = (try? c.decodeIfPresent(String.self, forKey: .age)) ?? ""
+            gitlab = (try? c.decodeIfPresent(Bool.self, forKey: .gitlab)) ?? false
+            signals = (try? c.decodeIfPresent([String].self, forKey: .signals)) ?? []
+            probeNote = (try? c.decodeIfPresent(String.self, forKey: .probeNote)) ?? nil
+            credential = (try? c.decodeIfPresent(Credential.self, forKey: .credential)) ?? nil
+        }
     }
 
     struct Cred: Codable, Identifiable {
@@ -42,6 +80,18 @@ struct ScanReport: Codable {
         let verifiedHost: String?
         let username: String?
         let error: String?
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            host = (try? c.decodeIfPresent(String.self, forKey: .host)) ?? nil
+            source = (try? c.decodeIfPresent(String.self, forKey: .source)) ?? ""
+            alsoIn = (try? c.decodeIfPresent([String].self, forKey: .alsoIn)) ?? []
+            masked = (try? c.decodeIfPresent(String.self, forKey: .masked)) ?? ""
+            verified = (try? c.decodeIfPresent(Bool.self, forKey: .verified)) ?? nil
+            verifiedHost = (try? c.decodeIfPresent(String.self, forKey: .verifiedHost)) ?? nil
+            username = (try? c.decodeIfPresent(String.self, forKey: .username)) ?? nil
+            error = (try? c.decodeIfPresent(String.self, forKey: .error)) ?? nil
+        }
     }
 
     let scannedAt: String
@@ -50,6 +100,16 @@ struct ScanReport: Codable {
     let truncated: Bool
     let repos: [Repo]
     let credentials: [Cred]
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        scannedAt = (try? c.decodeIfPresent(String.self, forKey: .scannedAt)) ?? ""
+        roots = (try? c.decodeIfPresent(Roots.self, forKey: .roots)) ?? Roots(existing: [], missing: [])
+        dirsVisited = (try? c.decodeIfPresent(Int.self, forKey: .dirsVisited)) ?? 0
+        truncated = (try? c.decodeIfPresent(Bool.self, forKey: .truncated)) ?? false
+        repos = (try? c.decodeIfPresent([Repo].self, forKey: .repos)) ?? []
+        credentials = (try? c.decodeIfPresent([Cred].self, forKey: .credentials)) ?? []
+    }
 
     /// 按实例聚合。凭据是实例级属性，不该在每个项目上重复说一遍。
     var instances: [Instance] {
@@ -120,6 +180,9 @@ final class Scanner: ObservableObject {
     @Published private(set) var output: String = ""
 
     private var process: Process?
+    /// cancel() 主动 SIGTERM 后，terminationHandler 还是会以非零退出码回调。
+    /// 没有这个标志位，取消会被覆盖成「扫描失败（退出码 143）」。
+    private var cancelled = false
 
     /// 默认读 ~/.tldesk/scan.json；TLDESK_SCAN 可覆盖，用来渲染空态或调试别的机器上的结果。
     nonisolated static var reportPath: URL {
@@ -147,18 +210,20 @@ final class Scanner: ObservableObject {
         guard phase != .running else { return }
         phase = .running
         output = ""
+        cancelled = false
 
-        guard let dir = Self.locateSidecar() else {
-            phase = .failed("找不到 sidecar 目录。把它放在仓库的 sidecar/ 下，或设环境变量 TLDESK_SIDECAR 指向它。")
-            return
-        }
-        guard let node = Self.locateNode() else {
-            phase = .failed("找不到 node。装一个 Node 18+ 就能跑（brew install node），装完重试。")
-            return
-        }
-
-        let script = dir.appendingPathComponent("tl.mjs").path
         Task {
+            // 探测 sidecar / node 可能要走一次登录 shell（几百毫秒），不能放主线程
+            guard let dir = await Task.detached(operation: { Self.locateSidecar() }).value else {
+                phase = .failed("找不到 sidecar 目录。把它放在仓库的 sidecar/ 下，或设环境变量 TLDESK_SIDECAR 指向它。")
+                return
+            }
+            guard let node = await Task.detached(operation: { Self.locateNode() }).value else {
+                phase = .failed("找不到 node。装一个 Node 18+ 就能跑（brew install node），装完重试。")
+                return
+            }
+
+            let script = dir.appendingPathComponent("tl.mjs").path
             do {
                 let text = try await Self.launch(node, [script, "scan"], cwd: dir) { [weak self] proc in
                     self?.process = proc
@@ -172,13 +237,15 @@ final class Scanner: ObservableObject {
                     phase = .done
                 }
             } catch {
-                phase = .failed(error.localizedDescription)
+                // 用户取消不是失败，回到 idle
+                phase = cancelled ? .idle : .failed(error.localizedDescription)
             }
             process = nil
         }
     }
 
     func cancel() {
+        cancelled = true
         process?.terminate()
         process = nil
         phase = .idle
@@ -192,28 +259,46 @@ final class Scanner: ObservableObject {
     @Published private(set) var collectResult: String?
     var onCollected: (() -> Void)?
 
+    /// 采集子进程的引用。register 拿不到它的话，「取消采集」无从谈起。
+    private var collectProcess: Process?
+    private var collectCancelled = false
+
     func collect(project: String, repo: String) {
         guard collecting == nil else { return }
-        guard let dir = Self.locateSidecar(), let node = Self.locateNode() else {
-            collectResult = "找不到 sidecar 目录或 node，没法采集。"
-            return
-        }
-
         collecting = project
         collectResult = nil
-        let script = dir.appendingPathComponent("tl.mjs").path
+        collectCancelled = false
 
         Task {
-            defer { collecting = nil }
+            defer {
+                collecting = nil
+                collectProcess = nil
+            }
+            // 同 run()：探测可能走登录 shell，放主线程会卡 UI
+            guard let dir = await Task.detached(operation: { Self.locateSidecar() }).value,
+                  let node = await Task.detached(operation: { Self.locateNode() }).value
+            else {
+                collectResult = "找不到 sidecar 目录或 node，没法采集。"
+                return
+            }
+            let script = dir.appendingPathComponent("tl.mjs").path
+
             do {
-                let text = try await Self.launch(node, [script, "facts", "--project", project, "--repo", repo], cwd: dir) { _ in }
+                let text = try await Self.launch(node, [script, "facts", "--project", project, "--repo", repo], cwd: dir) { [weak self] proc in
+                    self?.collectProcess = proc
+                }
                 let tail = text.split(separator: "\n").suffix(3).joined(separator: "\n")
                 collectResult = "已采集 \(project)\n\(tail)"
                 onCollected?()
             } catch {
-                collectResult = error.localizedDescription
+                collectResult = collectCancelled ? "已取消采集 \(project)" : error.localizedDescription
             }
         }
+    }
+
+    func cancelCollect() {
+        collectCancelled = true
+        collectProcess?.terminate()
     }
 
     // MARK: - 定位
@@ -233,8 +318,13 @@ final class Scanner: ObservableObject {
     }
 
     /// 走一次登录 shell 问 node 在哪。nvm / fnm / asdf 装的 node 不在 /usr/bin，
-    /// 硬编码路径会在一半机器上失败。
+    /// 硬编码路径会在一半机器上失败。结果走缓存：登录 shell 探测要几百毫秒，
+    /// 每次扫描/采集都重跑一遍是纯浪费。
     nonisolated static func locateNode() -> String? {
+        NodePathCache.shared.locate()
+    }
+
+    fileprivate nonisolated static func probeNode() -> String? {
         let fixed = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
         if let hit = fixed.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) { return hit }
 
@@ -312,8 +402,33 @@ enum ScanError: LocalizedError {
         switch self {
         case let .failed(code, text):
             let last = text.split(separator: "\n").suffix(3).joined(separator: "\n")
-            return "扫描失败（退出码 \(code)）\n\(last)"
+            return "命令失败（退出码 \(code)）\n\(last)"
         }
+    }
+}
+
+/// locateNode 的结果缓存。可能被主线程和 detached task 同时碰，加锁。
+private final class NodePathCache: @unchecked Sendable {
+    static let shared = NodePathCache()
+
+    private let lock = NSLock()
+    /// 外层 nil = 还没探测过；内层 nil = 探测过但没找到
+    private var cached: String??
+
+    func locate() -> String? {
+        lock.lock()
+        if let cached {
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+
+        let found = Scanner.probeNode()
+
+        lock.lock()
+        cached = found
+        lock.unlock()
+        return found
     }
 }
 

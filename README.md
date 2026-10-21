@@ -60,7 +60,8 @@ sidecar/                采集与分析（Node，零依赖）
 ├── lib/trend.mjs       CI 上报的健康度趋势（JSONL）
 ├── lib/health.mjs      离线体检 + 棘轮基线
 ├── lib/bugs.mjs        bug issue 归因
-└── test/               106 个单测（node --test）
+├── lib/redact.mjs      token 脱敏（唯一实现，auth / scan 共用）
+└── test/               128 个单测（node --test）
 ```
 
 两层之间只有一个契约文件：
@@ -70,7 +71,8 @@ sidecar/                采集与分析（Node，零依赖）
 ~/.tldesk/scan.json       ← 本机扫描结果（扫描页，不含 token）
 ~/.tldesk/health.json     ← 体检基线（棘轮）
           ↓
-      TLDesk.app          ← 只读消费，不联网、不写库、不常驻
+      TLDesk.app          ← 只读消费这三个文件；app 本体不联网。
+                            界面上的一键扫描 / 采集是替人调 sidecar CLI —— 联网与写盘都在 sidecar
 ```
 
 静态分析留在 Node 生态（导入图、路由解析），Swift 端只负责展示。
@@ -94,6 +96,10 @@ node tl.mjs impact --repo . --files src/ui/Button.tsx
 凭据按优先级自动解析，**不需要把 token 写进代码**：
 `GITLAB_TOKEN` 环境变量 → `~/.tldesk/config.json` → glab CLI 配置 → 钥匙串（git credential）→ `~/.netrc`。
 只需要 `read_api`，全程只有 GET，token 只在内存里。
+
+两个例外说明：`CI_JOB_TOKEN` 也认，但走 `JOB-TOKEN` 头而不是 `PRIVATE-TOKEN`，能力有限
+（`/user` 不支持，`tl auth` 会如实说明而不是报「token 无效」）；只设 `GITLAB_TOKEN` 而 host
+缺省成 gitlab.com 时，输出会带一条 ⚠ 提示（自建实例记得连同 `GITLAB_HOST` 一起设）。
 
 ### 本机扫描：让工具自己去找，别让人写配置
 
@@ -136,7 +142,7 @@ GitLab 里没有「声称进度」这种字段。硬造一个就得让人填表�
 | | 怎么算 |
 |---|---|
 | **计划** | 时间轴应然进度：里程碑起止或到期日，线性推进 |
-| **事实** | issue 任务清单勾选率；没有清单时退化为关联 MR 的状态 |
+| **事实** | issue 任务清单勾选率；没有清单时退化为关联 MR 的状态（opened + 近 90 天已合并的都算） |
 
 三条规矩：**没有时间基线的不做判断**（不猜）、**只报落后不报超前**（超前不需要干预）、
 **差小于 5 个百分点视为噪声**（阈值只在 sidecar 里定义一次，UI 不再二次过滤）。
@@ -178,6 +184,8 @@ GitLab 里没有「声称进度」这种字段。硬造一个就得让人填表�
 - **只扫新增行**。删掉的那行里写着 `debugger` 不算命中。
 - **不读整文件**，所以判断不了「这个函数是不是太长了」；**不跑 tsc / eslint**，类型和规则问题仍是 CI 的活。
 - 没命中任何判据 ≠ 没问题，只是「模式表里没匹配上」。UI 上写的是「没命中判据」，不是「通过」。
+- 模式表是**逐行匹配**，换行写的 `<img>` 这类多行结构认不出；GitLab 把超大 diff 折叠/超限时
+  会明说「N 个文件未扫描」，而不会混进「没命中判据」。
 
 ### Bug：只有天数和归属是真的
 
@@ -236,8 +244,8 @@ tl trend --project group/repo --ref main
 |---|---|
 | 产物体积 | `dist/` `.next/` `build/` 的实际字节数，对预算 |
 | 源码体量 | 产品代码行数 + 最大文件（测试与 fixture 不算） |
-| 未使用的直接依赖 | `package.json` 对账导入图，工具链包与 `@types/*` 排除 |
-| 重复版本依赖 | 读 `package-lock.json`，同名包锁了多个版本 |
+| 未使用的直接依赖 | `package.json` 的 `dependencies` 对账导入图，工具链包与 `@types/*` 排除（devDependencies 不查） |
+| 重复版本依赖 | 读 `package-lock.json`（v2+），同名包锁了多个版本；v1 / pnpm / yarn 会明说「暂不解析」 |
 | 废弃 API 面 | 固定模式表扫源码，命中项带文件名 |
 
 基线存 `~/.tldesk/health.json`，留最近 12 次读数给 sparkline。

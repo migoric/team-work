@@ -16,15 +16,18 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { maskToken as maskTokenShared } from './redact.mjs';
+import { parseGlabConfig } from './scan.mjs';
+
 export const CONFIG_PATH = join(homedir(), '.tldesk', 'config.json');
 
-export function readConfig() {
-  if (!existsSync(CONFIG_PATH)) return null;
+export function readConfig(path = CONFIG_PATH) {
+  if (!existsSync(path)) return null;
   try {
-    const raw = JSON.parse(readFileSync(CONFIG_PATH, 'utf8'));
+    const raw = JSON.parse(readFileSync(path, 'utf8'));
     return raw.gitlab ? raw : { gitlab: raw };
   } catch (err) {
-    throw new Error(`${CONFIG_PATH} 不是合法 JSON：${err.message}`);
+    throw new Error(`${path} 不是合法 JSON：${err.message}`);
   }
 }
 
@@ -36,29 +39,35 @@ function hostnameOf(host) {
   }
 }
 
-function fromEnv() {
-  const token = process.env.GITLAB_TOKEN || process.env.GL_TOKEN || process.env.CI_JOB_TOKEN;
+function fromEnv(env) {
+  const token = env.GITLAB_TOKEN || env.GL_TOKEN || env.CI_JOB_TOKEN;
   if (!token) return null;
-  const which = process.env.GITLAB_TOKEN ? 'GITLAB_TOKEN' : process.env.GL_TOKEN ? 'GL_TOKEN' : 'CI_JOB_TOKEN';
-  return { token, source: `环境变量 ${which}` };
+  const which = env.GITLAB_TOKEN ? 'GITLAB_TOKEN' : env.GL_TOKEN ? 'GL_TOKEN' : 'CI_JOB_TOKEN';
+  // CI_JOB_TOKEN 不是 PAT：只能走 JOB-TOKEN 头、能力窄，调用方要按 kind 区分对待
+  return { token, source: `环境变量 ${which}`, kind: which === 'CI_JOB_TOKEN' ? 'job' : 'pat' };
 }
 
-function fromGlabConfig() {
+function fromGlabConfig(home, targetHost) {
   const paths = [
-    join(homedir(), '.config', 'glab-cli', 'config.yml'),
-    join(homedir(), 'Library', 'Application Support', 'glab-cli', 'config.yml')
+    join(home, '.config', 'glab-cli', 'config.yml'),
+    join(home, 'Library', 'Application Support', 'glab-cli', 'config.yml')
   ];
   const path = paths.find((p) => existsSync(p));
   if (!path) return null;
 
-  const text = readFileSync(path, 'utf8');
-  const hostMatch = text.match(/host:\s*(\S+)/);
-  const tokenMatch = text.match(/token:\s*(\S+)/);
-  if (!tokenMatch) return null;
+  // glab 配置有单 host / 多 host 两种形状，未锚定的正则会跨 host 串 token；
+  // 用 scan 里那个逐行状态机解析，不在这里复写一份
+  const entries = parseGlabConfig(readFileSync(path, 'utf8'));
+  if (!entries.length) return null;
 
-  const token = tokenMatch[1].replace(/^["']|["']$/g, '');
-  const host = hostMatch ? hostMatch[1].replace(/^["']|["']$/g, '') : 'https://gitlab.com';
-  return { host, token, source: `glab CLI (${path})` };
+  const target = targetHost ? hostnameOf(targetHost) : null;
+  const picked = entries.find((e) => e.host && e.host === target) ?? entries.find((e) => !e.host) ?? entries[0];
+  const host = picked.host
+    ? /^https?:\/\//.test(picked.host)
+      ? picked.host
+      : `https://${picked.host}`
+    : 'https://gitlab.com';
+  return { host, token: picked.token, source: `glab CLI (${path})` };
 }
 
 function fromGitCredential(host) {
@@ -85,8 +94,8 @@ function fromGitCredential(host) {
   }
 }
 
-function fromNetrc(host) {
-  const path = join(homedir(), '.netrc');
+function fromNetrc(home, host) {
+  const path = join(home, '.netrc');
   if (!existsSync(path) || !host) return null;
   const text = readFileSync(path, 'utf8');
   const target = hostnameOf(host);
@@ -102,18 +111,32 @@ function fromNetrc(host) {
   return null;
 }
 
-export function resolveAuth() {
-  const config = readConfig() ?? {};
+/**
+ * 解析出最终要用的 { host, token, source, ... }。
+ * 依赖都可注入（env / configPath / home / gitCredential），测试里不碰真机环境。
+ */
+export function resolveAuth({
+  env = process.env,
+  configPath = CONFIG_PATH,
+  home = homedir(),
+  gitCredential = fromGitCredential
+} = {}) {
+  const config = readConfig(configPath) ?? {};
   const cfg = config.gitlab ?? {};
 
-  const host = cfg.host || process.env.GITLAB_HOST || 'https://gitlab.com';
+  const host = cfg.host || env.GITLAB_HOST || 'https://gitlab.com';
 
+  // 顺序即优先级：env → config → glab → 钥匙串 → netrc。
+  // 为什么这里默认带钥匙串，而 scan 默认不读：scan 是「无感探测」，弹一个系统
+  // 授权框等于把进程挂住，所以必须 --keychain 显式开；这里是用户显式要用凭据的
+  // 动作（tl auth / tl facts），git credential fill 配了 GIT_TERMINAL_PROMPT=0
+  // 与 5s 超时，最差情况是超时落空，不会挂住进程。
   const candidates = [
-    fromEnv(),
-    cfg.token ? { token: cfg.token, source: `config 文件 ${CONFIG_PATH}` } : null,
-    fromGlabConfig(),
-    fromNetrc(host),
-    fromGitCredential(host)
+    fromEnv(env),
+    cfg.token ? { token: cfg.token, source: `config 文件 ${configPath}` } : null,
+    fromGlabConfig(home, host),
+    gitCredential(host),
+    fromNetrc(home, host)
   ].filter(Boolean);
 
   if (!candidates.length) {
@@ -122,10 +145,10 @@ export function resolveAuth() {
       '任选一种方式提供（都是本机、不上传）：',
       '',
       '  1) 写配置文件（推荐，权限设 600）：',
-      `     mkdir -p ~/.tldesk && cat > ${CONFIG_PATH} <<'EOF'`,
+      `     mkdir -p ~/.tldesk && cat > ${configPath} <<'EOF'`,
       '     { "gitlab": { "host": "https://gitlab.你的域名", "token": "glpat-xxxx" } }',
       '     EOF',
-      '     chmod 600 ' + CONFIG_PATH,
+      '     chmod 600 ' + configPath,
       '',
       '  2) 环境变量：export GITLAB_TOKEN=glpat-xxxx GITLAB_HOST=https://gitlab.你的域名',
       '',
@@ -139,17 +162,24 @@ export function resolveAuth() {
   }
 
   const picked = candidates[0];
+  // 环境变量只给了 token 没给 host 时，自建实例用户会拿公司 token 去打 gitlab.com，
+  // 换来一个莫名其妙的 401。不替他改目标，但要把这个坑明说。
+  const warning =
+    picked.source.startsWith('环境变量') && !cfg.host && !env.GITLAB_HOST
+      ? 'token 来自环境变量但没有配 host，按 gitlab.com 处理；自建实例请补 GITLAB_HOST 或写进 config'
+      : null;
+
   return {
     host: host.replace(/\/$/, ''),
     token: picked.token,
     username: picked.username || cfg.username,
     source: picked.source,
+    jobToken: picked.kind === 'job',
+    warning,
     projects: cfg.projects ?? []
   };
 }
 
 export function maskToken(token) {
-  if (!token) return '(none)';
-  if (token.length <= 10) return '***';
-  return `${token.slice(0, 4)}…${token.slice(-4)} (${token.length} chars)`;
+  return maskTokenShared(token, { locale: 'en' });
 }

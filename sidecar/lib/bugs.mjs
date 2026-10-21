@@ -20,7 +20,9 @@ import { daysAgo } from './facts.mjs';
 
 export const ERROR_LOG_PATH = join(homedir(), '.tldesk', 'errors.jsonl');
 
-const BUG_LABEL = /(^|::|\/)(bug|defect|hotfix|缺陷|故障)/i;
+// 词边界收紧：bugfix-needed / debug 这种只是长得像，不能误中；
+// type::bug、bug::ui、bug-bash 这类有分隔符或刚好结尾的才算。
+const BUG_LABEL = /(^|::|\/)(bug|defect|hotfix|缺陷|故障)(?!\w)/i;
 
 export function isBugIssue(issue) {
   const labels = (issue.labels ?? []).map((l) => (typeof l === 'string' ? l : l?.name ?? ''));
@@ -40,15 +42,16 @@ export function guessFile(description = '', fileSet = null) {
 /** 默认实现的 git 查询：这个文件最近一次改动。测试里可以注入别的实现。 */
 export function lastCommitFor(root, file) {
   try {
+    // 取 %H 再截 12 位，与 lib/trend.mjs 的 reportEntry 口径一致，别一处 7 位一处 12 位
     const out = execFileSync(
       'git',
-      ['-C', root, 'log', '-1', '--format=%h%x1f%ad%x1f%s', '--date=short', '--', file],
+      ['-C', root, 'log', '-1', '--format=%H%x1f%ad%x1f%s', '--date=short', '--', file],
       { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }
     ).trim();
     if (!out) return null;
     const [hash, date, subject] = out.split('\u001f');
     if (!hash) return null;
-    return { hash, date, subject: subject ?? '' };
+    return { hash: hash.slice(0, 12), date, subject: subject ?? '' };
   } catch {
     return null;
   }

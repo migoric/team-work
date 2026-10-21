@@ -115,3 +115,15 @@ test('appendEntry 是追加写，两行都在', () => {
 test('readTrendFile 文件不存在返回空数组', () => {
   assert.deepEqual(readTrendFile('/tmp/绝对不存在-tl-trend.jsonl'), []);
 });
+
+test('reportEntry 丢弃非数字 / 非有限的 raw，不编造 0', () => {
+  const entry = reportEntry({
+    metrics: [
+      { id: 'bundle', raw: '1234' },
+      { id: 'loc', raw: NaN },
+      { id: 'deps', raw: Infinity },
+      { id: 'files', raw: 7 }
+    ]
+  });
+  assert.deepEqual(entry.metrics, { files: 7 });
+});

@@ -20,6 +20,15 @@ test('isBugIssue 认 label 的各种写法，不误伤 feature', () => {
   assert.equal(isBugIssue({}), false);
 });
 
+test('isBugIssue 有词边界：debug / bugfix-needed 只是长得像，不误中', () => {
+  assert.equal(isBugIssue({ labels: ['debug'] }), false);
+  assert.equal(isBugIssue({ labels: ['bugfix-needed'] }), false);
+  assert.equal(isBugIssue({ labels: ['debugger'] }), false);
+  // 分隔符结尾的仍然认
+  assert.equal(isBugIssue({ labels: ['bug-bash'] }), true);
+  assert.equal(isBugIssue({ labels: ['severity::bug'] }), true);
+});
+
 test('guessFile 只认仓库里存在的路径', () => {
   const files = new Set(['src/components/OrderCard.tsx']);
   assert.equal(guessFile('在 `src/components/OrderCard.tsx` 里炸了', files), 'src/components/OrderCard.tsx');

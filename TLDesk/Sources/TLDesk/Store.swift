@@ -10,33 +10,37 @@ final class Store: ObservableObject {
     /// 刷新按钮的旋转动画靠它驱动；每次点加一，值不变也会触发 symbolEffect。
     @Published private(set) var reloadCount = 0
 
-    private let path = "~/.tldesk/snapshot.json"
-
     init() {
-        if let loaded = Snapshot.load() {
-            snapshot = loaded
-            sourceLabel = path
-            isSample = false
-        } else {
-            snapshot = .sample
-            sourceLabel = "内置样例数据"
-            isSample = true
-        }
+        snapshot = .empty
+        sourceLabel = ""
+        isSample = false
         lastUpdated = Date()
+        apply(Snapshot.load())
     }
 
     func reload() {
-        if let loaded = Snapshot.load() {
+        apply(Snapshot.load())
+        lastUpdated = Date()
+        reloadCount += 1
+    }
+
+    private func apply(_ result: Snapshot.LoadResult) {
+        switch result {
+        case let .ok(loaded):
             snapshot = loaded
-            sourceLabel = path
+            sourceLabel = Snapshot.sourcePathLabel
             isSample = false
-        } else {
+        case .missing:
             snapshot = .sample
             sourceLabel = "内置样例数据"
             isSample = true
+        case let .corrupt(detail):
+            // 坏掉的快照不能用样例顶替：用户会把假数据当成好的。显示空态 + 错误来源。
+            snapshot = .empty
+            sourceLabel = "快照损坏：\(detail)"
+            isSample = false
         }
         lastUpdated = Date()
-        reloadCount += 1
     }
 
     // 不在这里二次过滤：阈值只在 sidecar 里定义一次，

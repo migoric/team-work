@@ -224,6 +224,8 @@ export function measure(root, { budgets = {} } = {}) {
   }
 
   // 4. 重复版本依赖
+  // 只认 npm v2+ 的 lockfile（有 packages 段）。文件存在但格式不支持时，
+  // 要明说「存在但不支持」，不能说成「没有 package-lock.json」——前者是能力边界，后者是事实错误。
   const lock = readJson(join(root, 'package-lock.json'));
   if (lock?.packages) {
     const versions = new Map();
@@ -245,6 +247,10 @@ export function measure(root, { budgets = {} } = {}) {
         ? `同一个包锁了多个版本：${dup.slice(0, 3).map(([n, v]) => `${n}×${v.size}`).join('、')}`
         : 'lockfile 里没有同名包多版本共存'
     });
+  } else if (lock) {
+    skipped.push('package-lock.json 存在但不是支持的格式（没有 packages 段，可能是 lockfileVersion v1），跳过重复版本指标');
+  } else if (existsSync(join(root, 'pnpm-lock.yaml')) || existsSync(join(root, 'yarn.lock'))) {
+    skipped.push('存在 pnpm-lock.yaml / yarn.lock（格式暂不支持解析），跳过重复版本指标');
   } else {
     skipped.push('没有 package-lock.json，跳过重复版本指标');
   }

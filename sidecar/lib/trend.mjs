@@ -127,7 +127,8 @@ export function mergeSeries(local = [], ci = [], { max = 24 } = {}) {
 export function reportEntry({ metrics = [], ref = null, sha = null, now = new Date(), pipeline = null } = {}) {
   const values = {};
   for (const m of metrics) {
-    if (typeof m?.raw === 'number') values[m.id] = m.raw;
+    // 非数字 / 非有限的 raw 直接丢弃，不用 0 顶替（0 会让曲线看起来"突然变好"）
+    if (typeof m?.raw === 'number' && Number.isFinite(m.raw)) values[m.id] = m.raw;
   }
   return {
     ts: now.toISOString(),

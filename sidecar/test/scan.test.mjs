@@ -326,3 +326,11 @@ test('redactToken 任何长度都不泄露完整 token', () => {
   }
   assert.equal(redactToken(''), '(无)');
 });
+
+test('shell 文件里 TOKEN 写在 HOST 之前也能配上对', () => {
+  const home = mkdtempSync(join(tmpdir(), 'tlscan-'));
+  write(join(home, '.zshrc'), 'export GITLAB_TOKEN=glpat-first\nexport GITLAB_HOST=https://git.example.com\n');
+  const creds = scanCredentials({ home, env: {}, repos: [] });
+  const hit = creds.find((c) => c.token === 'glpat-first');
+  assert.equal(hit.host, 'git.example.com', 'TOKEN 在前的写法不能把 host 丢掉');
+});

@@ -70,6 +70,39 @@ test('evaluateIssue 零证据时事实为 0 并说明原因', () => {
   assert.ok(ev.evidence.some((l) => l.includes('零证据')));
 });
 
+test('issue 无清单但关联 MR 已合并：不再被报成零进度', () => {
+  const issue = {
+    iid: 12,
+    title: '登录改造',
+    created_at: '2026-10-01T00:00:00Z',
+    due_date: '2026-10-31',
+    description: '',
+    references: { short: '#12' },
+    assignees: [{ name: '陈默' }]
+  };
+  const merged = {
+    iid: 100,
+    state: 'merged',
+    source_branch: 'feature/12-login',
+    title: '登录改造',
+    author: { name: '陈默' },
+    created_at: '2026-10-10T00:00:00Z',
+    updated_at: '2026-10-20T00:00:00Z',
+    changes_count: '2'
+  };
+
+  const ev = evaluateIssue(issue, [merged], NOW);
+  assert.equal(ev.actual, 100);
+  assert.ok(!ev.evidence.some((l) => l.includes('零证据')));
+  assert.ok(ev.evidence.some((l) => l.includes('已合并')));
+
+  // 进 snapshot：actual 100 ≥ planned，算对齐而不是偏差；merged MR 不进待评审列表
+  const snap = buildSnapshot({ issues: [issue], mergeRequests: [merged], now: NOW });
+  assert.equal(snap.deviations.length, 0);
+  assert.equal(snap.aligned, 1);
+  assert.equal(snap.prs.length, 0);
+});
+
 test('linkMergeRequests 认分支编号和描述里的 #', () => {
   const issues = [{ iid: 12 }, { iid: 34 }];
   const mrs = [

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -8,10 +10,12 @@ import {
   createAnalyzer,
   detectRoutes,
   extractImports,
+  impactOf,
   parseAliases,
   resolveSpecifier,
   riskOf,
-  riskScore
+  riskScore,
+  walk
 } from '../lib/impact.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -91,4 +95,64 @@ test('风险分：动到构建配置单加权重', () => {
 test('非仓库路径返回 null，而不是抛错', () => {
   assert.equal(createAnalyzer('/definitely/not/here'), null);
   assert.equal(createAnalyzer(''), null);
+});
+
+test('walk 撞上限时置 meta.truncated，不静默截断', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tl-impact-'));
+  for (let i = 0; i < 5; i += 1) writeFileSync(join(dir, `f${i}.ts`), 'export const x = 1;\n');
+
+  const meta = { truncated: false };
+  const files = walk(dir, { maxFiles: 3, meta });
+  assert.equal(files.length, 3);
+  assert.equal(meta.truncated, true);
+
+  const plenty = { truncated: false };
+  assert.equal(walk(dir, { maxFiles: 100, meta: plenty }).length, 5);
+  assert.equal(plenty.truncated, false);
+});
+
+test('impactOf 撞节点上限时标 truncated，而不是静默少爬', () => {
+  const importers = new Map([
+    ['a.ts', new Set(['b.ts'])],
+    ['b.ts', new Set(['c.ts'])],
+    ['c.ts', new Set(['d.ts'])]
+  ]);
+  const hit = impactOf(['a.ts'], { importers, routes: [] }, { limit: 2 });
+  assert.equal(hit.truncated, true);
+  assert.equal(hit.visited, 2);
+
+  const full = impactOf(['a.ts'], { importers, routes: [] }, { limit: 100 });
+  assert.equal(full.truncated, false);
+  assert.equal(full.visited, 4);
+});
+
+test('parseAliases 沿 tsconfig extends 链取 paths，子的 paths 整体覆盖父的', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tl-impact-'));
+  writeFileSync(
+    join(dir, 'tsconfig.base.json'),
+    JSON.stringify({ compilerOptions: { baseUrl: '.', paths: { '~/*': ['./src/*'] } } })
+  );
+  // extends 不带 .json 后缀也要认（tsc 允许）
+  writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({ extends: './tsconfig.base' }));
+  const aliases = parseAliases(dir);
+  assert.equal(aliases.length, 1);
+  assert.equal(aliases[0].prefix, '~/');
+  assert.deepEqual(aliases[0].targets, ['src/*']);
+
+  writeFileSync(
+    join(dir, 'tsconfig.json'),
+    JSON.stringify({ extends: './tsconfig.base', compilerOptions: { paths: { '@app/*': ['./app/*'] } } })
+  );
+  const over = parseAliases(dir);
+  assert.equal(over.length, 1);
+  assert.equal(over[0].prefix, '@app/');
+
+  // extends 是包名时本地解析不了，退回自身配置而不是抛错
+  writeFileSync(join(dir, 'tsconfig.json'), JSON.stringify({ extends: '@tsconfig/node20/tsconfig.json', compilerOptions: { paths: { '#x/*': ['./x/*'] } } }));
+  assert.equal(parseAliases(dir)[0].prefix, '#x/');
+});
+
+test('pages 下任意一段以 _ 开头都不算路由，不只排首段', () => {
+  const routes = detectRoutes(['pages/_app.tsx', 'pages/blog/_draft.tsx', 'pages/blog/ok.tsx']).map((r) => r.path);
+  assert.deepEqual(routes, ['/blog/ok']);
 });

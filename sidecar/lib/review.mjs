@@ -55,7 +55,7 @@ const RISK_RULES = [
   {
     id: 'risk.secret',
     level: 'must',
-    re: /\b(api[_-]?key|secret|access[_-]?token|password|passwd)\b\s*[:=]\s*['"][^'"]{8,}['"]/i,
+    re: /\b(api[_-]?key|secret|(?:access|auth|private|refresh|session|csrf|id)[_-]?token|token|password|passwd)\b\s*[:=]\s*['"][^'"]{8,}['"]/i,
     title: '疑似明文密钥',
     detail: '赋值右侧是字符串字面量。私有仓库也不是放密钥的地方：历史里删不干净。'
   },
@@ -207,6 +207,19 @@ export function reviewChanges(input = []) {
 
   /* ── 结构层 ── */
 
+  // GitLab 会把过大的 patch 折叠 / 截断：这部分我们一行都没看到。
+  // 必须明说，否则「没命中判据」会被误读成「检查过、没问题」。
+  const unscanned = patches.filter((p) => p.collapsed || p.tooLarge);
+  if (unscanned.length) {
+    push({
+      id: 'scope.collapsed',
+      level: 'should',
+      title: `${unscanned.length} 个文件的 diff 被 GitLab 折叠 / 超限，这部分没扫`,
+      detail: '模式表只吃了能看到的 patch。被折叠的部分可能藏着任何东西，要在 GitLab 上单独点开看。',
+      evidence: unscanned.slice(0, 6).map((p) => p.path)
+    });
+  }
+
   if (files > 15 || additions + deletions > 400) {
     push({
       id: 'scope.big',
@@ -315,7 +328,7 @@ export function reviewChanges(input = []) {
     checks,
     verdict: counts.must ? 'must' : counts.should ? 'should' : 'may',
     counts,
-    totals: { files, additions, deletions, codeFiles: codeFiles.length, testFiles: testFiles.length }
+    totals: { files, additions, deletions, codeFiles: codeFiles.length, testFiles: testFiles.length, unscanned: unscanned.length }
   };
 }
 

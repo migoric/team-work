@@ -11,6 +11,18 @@
 
 const DAY = 86400000;
 
+/**
+ * GitLab 的 due_date / start_date 是 date-only（'2026-10-31'）。
+ * Date.parse 会按 UTC 零点解析，本地时区下会漂移半天到一天；
+ * date-only 一律按本地日历日的零点解析，带时间的才走 Date.parse。
+ */
+function parseDateish(raw) {
+  if (!raw) return NaN;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(raw).trim());
+  if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
+  return Date.parse(raw);
+}
+
 export function daysAgo(iso, now = new Date()) {
   if (!iso) return 0;
   const t = Date.parse(iso);
@@ -45,8 +57,8 @@ export function plannedRatio(issue, now = new Date()) {
   const endRaw = milestone?.due_date || issue.due_date;
   if (!startRaw || !endRaw) return null;
 
-  const start = Date.parse(startRaw);
-  const end = Date.parse(endRaw);
+  const start = parseDateish(startRaw);
+  const end = parseDateish(endRaw);
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
 
   const t = (now.getTime() - start) / (end - start);
