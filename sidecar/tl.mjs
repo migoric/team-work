@@ -15,16 +15,30 @@
  *   - token 只在内存里，不写盘、不进日志
  *     （唯一例外是 `tl scan --write`，那是用户显式要求把凭据落盘）
  */
+import { execFileSync } from 'node:child_process';
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 import { CONFIG_PATH, maskToken, readConfig, resolveAuth } from './lib/auth.mjs';
-import { collectBugs } from './lib/bugs.mjs';
+import { ERROR_LOG_PATH, collectBugs, readErrorLog } from './lib/bugs.mjs';
 import { buildSnapshot } from './lib/facts.mjs';
 import { GitLab } from './lib/gitlab.mjs';
-import { collectHealth } from './lib/health.mjs';
+import { collectHealth, formatBytes, formatCount } from './lib/health.mjs';
 import { createAnalyzer } from './lib/impact.mjs';
+import { reviewChanges, verdictLabel } from './lib/review.mjs';
+import { attributeTrace } from './lib/sourcemap.mjs';
+import {
+  TREND_PATH,
+  appendEntry,
+  mergeSeries,
+  parseTrend,
+  readTrendFile,
+  reportEntry,
+  seriesFor,
+  summarize,
+  trendLabel
+} from './lib/trend.mjs';
 import {
   DEFAULT_ROOTS,
   classifyGitLab,
@@ -442,7 +456,11 @@ async function cmdProjects() {
   );
 }
 
-/** 只给要展示的那 12 个 MR 拉路径，避免为了影响面把整个项目的 diff 全拉一遍。 */
+/**
+ * 给要展示的那 12 个 MR 拉 diff。
+ * 以前只留路径，因为影响面只吃路径；现在 CR 判据要看新增行，所以正文一起留着。
+ * 仍然只拉这 12 个：整个项目的 diff 全拉一遍既慢又没必要。
+ */
 async function prefetchDiffs(gl, project, mergeRequests) {
   const targets = mergeRequests
     .filter((mr) => mr.state === 'opened' && !DRAFT(mr))
@@ -458,7 +476,7 @@ async function prefetchDiffs(gl, project, mergeRequests) {
         if (d?.new_path) paths.add(d.new_path);
         if (d?.old_path) paths.add(d.old_path);
       }
-      map.set(mr.iid, [...paths]);
+      map.set(mr.iid, { paths: [...paths], diffs });
     } catch (err) {
       console.log(`  ⚠ MR !${mr.iid} 取 diff 失败：${err.message.split('\n')[0]}`);
     }
@@ -494,18 +512,30 @@ async function cmdFacts(flags) {
   let analyzeMr = null;
   if (analyzer) {
     const diffs = await prefetchDiffs(gl, project, mergeRequests);
-    console.log(`  MR 路径：${diffs.size} 个可分析`);
+    console.log(`  MR diff：${diffs.size} 个已取回（影响面 + CR 判据都吃这份）`);
     analyzeMr = (mr) => {
-      const paths = diffs.get(mr.iid);
-      if (!paths) return null;
-      const hit = analyzer.impact(paths);
-      const files = paths.map((p) => p.split('/').slice(-2).join('/'));
-      return { ...hit, files };
+      const entry = diffs.get(mr.iid);
+      if (!entry) return null;
+      const hit = analyzer.impact(entry.paths);
+      const files = entry.paths.map((p) => p.split('/').slice(-2).join('/'));
+      // CR 判据：结构层 + 风险层。只吃 diff，不读整文件、不跑编译器（边界见 lib/review.mjs）
+      const review = flags['no-review'] ? null : reviewChanges(entry.diffs);
+      return { ...hit, files, review };
     };
   }
 
   const bugs = collectBugs({ issues, root: repo, files: analyzer?.files ?? null });
-  const health = flags['no-health'] ? [] : collectHealth({ root: repo }).metrics;
+
+  // 健康度：本地基线给「今天有没有变坏」，CI 上报给「团队与历史」。CI 有两点以上就用 CI 那条。
+  const measured = flags['no-health'] ? [] : collectHealth({ root: repo }).metrics;
+  const trendEntries = flags['no-health']
+    ? []
+    : readTrendFile(resolve(flags.trend ?? join(repo, TREND_PATH)));
+  const health = measured.map((m) => {
+    const { values, source } = mergeSeries(m.history, seriesFor(trendEntries, m.id));
+    return { ...m, history: values, historySource: source };
+  });
+  const ciPoints = trendEntries.length;
 
   const snapshot = buildSnapshot({ issues, mergeRequests, analyzeMr, bugs, health });
 
@@ -523,7 +553,8 @@ async function cmdFacts(flags) {
   console.log(`\n待评审    ${snapshot.prs.length} 个（不含 draft）`);
   for (const p of snapshot.prs.slice(0, 5)) {
     const scope = p.analyzed ? `${p.routes} 路由 / ${p.components} 共享` : '影响面未分析';
-    console.log(`  !${p.id.padEnd(7)} ${p.risk.padEnd(6)} ${scope.padEnd(18)} ${p.title.slice(0, 24)}`);
+    const verdict = p.reviewCounts ? verdictLabel({ counts: p.reviewCounts }) : '未检查';
+    console.log(`  !${p.id.padEnd(7)} ${p.risk.padEnd(6)} ${scope.padEnd(18)} ${verdict.padEnd(12)} ${p.title.slice(0, 24)}`);
   }
 
   console.log(`\nBug       ${snapshot.bugs.length} 条`);
@@ -535,8 +566,14 @@ async function cmdFacts(flags) {
     console.log('\n健康度');
     for (const h of health) {
       const flag = h.worse ? '↑' : h.delta === '基线' ? '·' : '↓';
-      console.log(`  ${flag} ${h.name.padEnd(12)} ${h.value.padEnd(9)} ${h.delta}`);
+      const src = h.historySource === 'ci' ? ' [CI]' : '';
+      console.log(`  ${flag} ${h.name.padEnd(12)} ${h.value.padEnd(9)} ${h.delta}${src}`);
     }
+    console.log(
+      ciPoints
+        ? `  趋势来源：CI 上报 ${ciPoints} 次（${TREND_PATH}）`
+        : `  趋势来源：本地基线（没有 ${TREND_PATH}，CI 还没开始上报）`
+    );
   }
 
   console.log(`\n写入 ${out}`);
@@ -546,6 +583,31 @@ async function cmdFacts(flags) {
 function cmdHealth(flags) {
   const repo = resolve(flags.repo ?? process.cwd());
   const { metrics, skipped } = collectHealth({ root: repo, save: true });
+
+  // CI 上报模式：把这次读数追加成一行 JSONL。CI 里跑完就提交回仓库，
+  // 采集端再 read_api 把它读回来 —— 上传到服务端就不用了，那需要一个常驻服务。
+  if (flags.report || flags.json) {
+    const entry = reportEntry({
+      metrics,
+      ref: process.env.CI_COMMIT_REF_NAME ?? null,
+      sha: process.env.CI_COMMIT_SHA ?? null,
+      pipeline: process.env.CI_PIPELINE_ID ?? null
+    });
+    if (flags.json) {
+      console.log(JSON.stringify(entry, null, 2));
+      return;
+    }
+    const path = resolve(flags.path ?? join(repo, TREND_PATH));
+    appendEntry(path, entry);
+    console.log(header('已追加一行趋势'));
+    console.log(`文件    ${path}`);
+    console.log(`读数    ${Object.entries(entry.metrics).map(([k, v]) => `${k}=${v}`).join(' · ')}`);
+    console.log(`来源    ${entry.ref ?? '未知分支'} @ ${entry.sha ?? '无 sha'}`);
+    console.log('\nCI 里把这一行提交回仓库即可（用 CI_JOB_TOKEN，不要用个人 token）：');
+    console.log(`  git add ${TREND_PATH} && git commit -m "chore(metrics): 体检读数" && git push`);
+    return;
+  }
+
   console.log(header(`本地体检 ${repo}`));
   for (const m of metrics) {
     const flag = m.worse ? '↑ 变坏' : m.delta === '基线' ? '· 基线' : '↓ 变好/持平';
@@ -557,6 +619,178 @@ function cmdHealth(flags) {
     for (const s of skipped) console.log(`  · ${s}`);
   }
   console.log('\n基线已更新到 ~/.tldesk/health.json');
+  console.log(`想让趋势对团队可见：在 CI 里跑 tl health --report，把 ${TREND_PATH} 提交回仓库。`);
+}
+
+/**
+ * CR 判据的独立入口：不连 GitLab，直接把本地两个 commit 之间的 diff 过一遍判定。
+ * 用法：tl review --repo . [--base origin/main] [--head HEAD] [--json]
+ * 这样没有 token 也能先验证判据本身对不对。
+ */
+function cmdReview(flags) {
+  const repo = resolve(flags.repo ?? process.cwd());
+  const base = flags.base ?? 'HEAD~1';
+  const head = flags.head ?? 'HEAD';
+
+  let files;
+  try {
+    files = runGit(repo, ['-c', 'core.quotepath=false', 'diff', '--name-status', `${base}`, `${head}`]);
+  } catch (err) {
+    throw new Error(`git diff ${base}..${head} 失败：${err.message.split('\n')[0]}`);
+  }
+
+  const rows = files
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => l.split('\t'));
+
+  const diffs = rows.map(([status, ...paths]) => {
+    const oldPath = paths[0] ?? '';
+    const newPath = paths[paths.length - 1] ?? oldPath;
+    const body = runGit(repo, ['diff', `${base}`, `${head}`, '--', newPath]);
+    return {
+      old_path: oldPath,
+      new_path: newPath,
+      new_file: status === 'A',
+      deleted_file: status === 'D',
+      renamed_file: status.startsWith('R'),
+      diff: body
+    };
+  });
+
+  const result = reviewChanges(diffs);
+
+  if (flags.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(header(`CR 判据 ${base}..${head} · ${result.totals.files} 个文件`));
+  console.log(`+${result.totals.additions} −${result.totals.deletions} 行 · 结论 ${verdictLabel(result)}`);
+  if (!result.checks.length) {
+    console.log('\n  没命中既定判据。这不等于"没问题" —— 只等于"模式表里没匹配上"。');
+  }
+  for (const c of result.checks) {
+    console.log(`\n  [${c.level}] ${c.title}`);
+    console.log(`  ${c.detail}`);
+    if (c.evidence.length) console.log(`  ${c.evidence.join('\n  ')}`);
+  }
+}
+
+/** 只读的 git 调用。超时就放弃，不阻塞整个命令。 */
+function runGit(repo, args) {
+  return execFileSync('git', ['-C', repo, ...args], {
+    encoding: 'utf8',
+    timeout: 15000,
+    maxBuffer: 32 * 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'ignore']
+  });
+}
+
+/** sourcemap 反查：线上位置 → 源码位置 → 最近改动它的 commit。 */
+function cmdTrace(flags) {
+  const repo = resolve(flags.repo ?? process.cwd());
+  const mapPath = flags.map ? resolve(flags.map) : null;
+
+  // --errors：把本地错误日志里带生成位置的条目一起反查，这是这条链路唯一有真实输入的入口
+  if (flags.errors) {
+    const rows = readErrorLog(flags.path ?? ERROR_LOG_PATH).filter((e) => e.file || e.stack);
+    console.log(header(`反查本地错误日志 ${rows.length} 条`));
+    if (!rows.length) {
+      console.log(`  没有可反查的条目（${ERROR_LOG_PATH}）。`);
+      console.log('  期望格式：{"fingerprint":"x","file":"dist/assets/index.js:1:48213","message":"…"}');
+      return;
+    }
+    const out = rows.map((e) => {
+      const at = typeof e.file === 'string' && /:\d+/.test(e.file) ? e.file : null;
+      const res = attributeTrace({ root: repo, at, stack: at ? null : e.stack, mapPath });
+      console.log(`\n  ${e.message ?? e.fingerprint ?? '(无消息)'}`);
+      printTrace(res);
+      return { entry: e, result: res };
+    });
+    if (flags.json) console.log(JSON.stringify(out, null, 2));
+    return;
+  }
+
+  const stack = typeof flags.stack === 'string' ? (existsSync(resolve(flags.stack)) ? readFileSync(resolve(flags.stack), 'utf8') : flags.stack) : null;
+  const at = typeof flags.at === 'string' ? flags.at : null;
+  if (!at && !stack) throw new Error('缺少 --at dist/app.js:1:48213 或 --stack <文件/文本>');
+
+  const res = attributeTrace({ root: repo, at, stack, mapPath });
+  if (flags.json) {
+    console.log(JSON.stringify(res, null, 2));
+    return;
+  }
+  console.log(header('sourcemap 反查'));
+  printTrace(res);
+}
+
+function printTrace(res) {
+  if (!res.ok) {
+    console.log(`  ✗ ${res.reason}`);
+    if (res.generated) console.log(`  位置 ${res.generated.file}:${res.generated.line}:${res.generated.column}`);
+    for (const n of res.notes ?? []) console.log(`  · ${n}`);
+    return;
+  }
+  console.log(`  生成位置  ${res.generated.file}:${res.generated.line}:${res.generated.column}`);
+  console.log(`  源码位置  ${res.original.file}:${res.original.line}:${res.original.column}${res.original.name ? ` (${res.original.name})` : ''}`);
+  if (res.commit) {
+    console.log(`  最近改动  ${res.commit.hash} · ${res.commit.date} · ${res.commit.subject}`);
+    console.log('            （这是「最近改动过」，不是「就是它引入的」）');
+  } else {
+    console.log('  最近改动  查不到（路径对不上本地仓库，或该文件没有提交记录）');
+  }
+  console.log(`  map       ${res.mapPath}`);
+  for (const n of res.notes ?? []) console.log(`  · ${n}`);
+}
+
+/** 趋势：读 CI 上报的 JSONL（本地文件或 GitLab 仓库里的文件），逐指标给结论。 */
+async function cmdTrend(flags) {
+  const path = flags.path ?? TREND_PATH;
+  let entries = [];
+
+  if (flags.file) {
+    entries = readTrendFile(resolve(flags.file));
+  } else if (flags.project) {
+    const auth = resolveAuth();
+    const gl = new GitLab(auth);
+    const text = await gl.rawFile(flags.project, path, flags.ref ?? 'main');
+    if (text === null) {
+      console.log(`✗ ${flags.project} 的 ${flags.ref ?? 'main'} 分支上没有 ${path}`);
+      console.log('  先在 CI 里跑 tl health --report，再把这一行提交回仓库。');
+      return;
+    }
+    entries = parseTrend(text);
+  } else {
+    const local = resolve(join(flags.repo ?? process.cwd(), path));
+    entries = readTrendFile(local);
+    if (!entries.length) {
+      console.log(`没有找到 ${local}`);
+      console.log('用 --file <本地文件> 或 --project group/repo [--ref main] 指定来源。');
+      return;
+    }
+  }
+
+  if (flags.json) {
+    console.log(JSON.stringify({ path, entries: entries.length, metrics: entries }, null, 2));
+    return;
+  }
+
+  console.log(header(`趋势 ${path} · ${entries.length} 次读数`));
+  const ids = [...new Set(entries.flatMap((e) => Object.keys(e.metrics ?? {})))];
+  for (const id of ids) {
+    const s = summarize(entries, id);
+    if (!s) continue;
+    const fmt = id === 'bundle' ? (v) => formatBytes(v) : (v) => formatCount(v);
+    const arrow = s.direction === 'worse' ? '↑' : s.direction === 'better' ? '↓' : '·';
+    console.log(
+      `\n  ${arrow} ${id.padEnd(12)} ${fmt(s.first)} → ${fmt(s.last)}` +
+        `${s.pct === null ? '' : ` (${s.pct > 0 ? '+' : ''}${s.pct.toFixed(1)}%)`}`
+    );
+    console.log(`    ${trendLabel(s)} · ${s.span.from?.slice(0, 10) ?? '?'} → ${s.span.to?.slice(0, 10) ?? '?'}`);
+    if (s.span.refs.length) console.log(`    分支 ${s.span.refs.join(', ')}`);
+  }
 }
 
 function cmdImpact(flags) {
@@ -595,8 +829,22 @@ function usage() {
        [--repo <dir>]         本地仓库根，默认当前目录（影响面与体检要用）
        [--out <file>]         默认 ~/.tldesk/snapshot.json
        [--no-impact]          跳过影响面分析
+       [--no-review]          跳过 CR 判据（结构层 + 风险层）
        [--no-health]          跳过本地体检
+       [--trend <file>]       趋势文件，默认 <repo>/metrics/health.jsonl
   tl health [--repo <dir>]    只跑本地体检并更新棘轮基线
+       [--report]             额外把这次读数追加成一行 JSONL（给 CI 上报用）
+       [--path <file>]        默认 metrics/health.jsonl（相对仓库根）
+       [--json]               只把这一行打到 stdout，不写文件
+  tl trend [--file <path> | --project <path> [--ref main]]
+                              看 CI 上报的健康度趋势（逐指标给「一路变坏/持平」结论）
+  tl review [--repo <dir>] [--base HEAD~1] [--head HEAD]
+                              对本地两个 commit 之间的 diff 跑 CR 判据（不需要 GitLab）
+  tl trace [--repo <dir>] --at dist/app.js:1:48213
+                              用 sourcemap 把生成位置翻回源码，再查最近改动它的 commit
+       [--stack <文件|文本>]  也可以直接喂一段报错栈
+       [--errors]             批量反查 ~/.tldesk/errors.jsonl
+       [--map <file>]         手动指定 .map
   tl impact [--repo <dir>] --files a.tsx,b.tsx
                               只看这几个文件的影响面
 
@@ -624,6 +872,15 @@ async function main() {
       break;
     case 'health':
       cmdHealth(flags);
+      break;
+    case 'trend':
+      await cmdTrend(flags);
+      break;
+    case 'review':
+      cmdReview(flags);
+      break;
+    case 'trace':
+      cmdTrace(flags);
       break;
     case 'impact':
       cmdImpact(flags);

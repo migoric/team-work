@@ -72,6 +72,13 @@ test('第一次体检：全部标基线，不谎报变坏', () => {
   assert.ok(baseline.metrics.bundle.last > 0);
 });
 
+test('applyBaseline 保留 raw：CI 上报存的是原始数值，不是 "1.42 MB"', () => {
+  const mk = (raw) => [{ id: 'bundle', name: '产物体积', raw, budget: 1500000, value: '1.2 MB', ratio: 0.8, note: '' }];
+  const out = applyBaseline(mk(1234), null, NOW).metrics[0];
+  assert.equal(out.raw, 1234);
+  assert.equal(out.value, '1.2 MB');
+});
+
 test('棘轮：变大就标 worse，变小不标', () => {
   const mk = (raw) => [{ id: 'loc', name: '源码体量', raw, budget: 60000, value: `${raw} 行`, ratio: raw / 60000, note: '' }];
   const base = applyBaseline(mk(1000), null, NOW).baseline;

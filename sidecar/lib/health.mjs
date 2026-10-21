@@ -316,6 +316,9 @@ export function applyBaseline(metrics, baseline = null, now = new Date()) {
     return {
       id: m.id,
       name: m.name,
+      // raw 一定要留着：CI 上报（lib/trend.mjs 的 reportEntry）存的是原始数值，
+      // 不是格式化后的 "1.42 MB"。少了它，趋势文件里只剩空对象。
+      raw: m.raw,
       value: m.value,
       delta,
       ratio: Math.min(1, Math.max(0, m.ratio)),

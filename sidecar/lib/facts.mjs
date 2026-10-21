@@ -203,7 +203,11 @@ export function buildSnapshot({
         note,
         analyzed: Boolean(im?.analyzed),
         impactedRoutes: im?.routes ?? [],
-        files: (im?.files ?? []).slice(0, 6)
+        files: (im?.files ?? []).slice(0, 6),
+        // CR 判据（结构层 + 风险层）。没跑就是 null，UI 显示「未检查」而不是「没问题」。
+        checks: im?.review?.checks ?? null,
+        verdict: im?.review?.verdict ?? null,
+        reviewCounts: im?.review?.counts ?? null
       };
     });
 

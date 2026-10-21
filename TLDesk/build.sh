@@ -14,6 +14,13 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/TLDesk"
 cp Info.plist "$APP/Contents/Info.plist"
+# 图标是设计产物（Tools/make-icon.swift + make-icon.sh 生成），没生成过就让 app 用系统默认图标，
+# 不为了一个装饰文件把编译搞失败。
+if [ -f Assets/AppIcon.icns ]; then
+  cp Assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
+else
+  echo "warn: 缺 Assets/AppIcon.icns，跑 ./make-icon.sh 生成" >&2
+fi
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 codesign --force --sign - "$APP" >/dev/null 2>&1 || true
 

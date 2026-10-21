@@ -161,7 +161,7 @@ struct ReviewPanel: View {
                 ringCaption: "高风险占比",
                 tint: Theme.accent,
                 headline: heroHeadline,
-                detail: "路由数与共享组件数是从本地仓库的导入图反推的，不是人估的。没跑过分析的那几个会明说「待分析」，不填 0。",
+                detail: "路由数与共享组件数是从本地仓库的导入图反推的，不是人估的。没跑过分析的那几个会明说「待分析」，不填 0。CR 判据只看 diff 里的确定性模式（类型压制、调试输出、明文密钥…），不判断代码写得好不好。",
                 stats: [
                     HeroStat(value: "\(store.highRiskPRs)", label: "个高风险"),
                     HeroStat(value: "\(store.analyzedPRs)/\(prs.count)", label: "已算影响面")
@@ -187,7 +187,11 @@ struct ReviewPanel: View {
 
     private var heroHeadline: String {
         if prs.isEmpty { return "队列是空的" }
-        // 先按风险、再按路由数：路由多但没动共享层的，不该排在动了基座的前面
+        // 有「必看」判据的优先：那是 diff 里能指到行号的东西，比路由数更该先看
+        if let worst = prs.first(where: { ($0.reviewCounts?.must ?? 0) > 0 }), let n = worst.reviewCounts?.must {
+            return "!\(worst.id) 有 \(n) 条必看判据，先看它"
+        }
+        // 再按风险、路由数：路由多但没动共享层的，不该排在动了基座的前面
         let ranked = prs.filter(\.analyzed).sorted {
             let lhs = ($0.risk == .high ? 100 : $0.risk == .medium ? 10 : 0) + $0.routes
             let rhs = ($1.risk == .high ? 100 : $1.risk == .medium ? 10 : 0) + $1.routes
@@ -243,6 +247,9 @@ struct PRRow: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 7) {
+                        if let pill = reviewPill {
+                            Pill(text: pill.text, tint: pill.tint, icon: "checklist")
+                        }
                         MemberLabel(name: pr.author, ticket: nil)
                         Text("·").font(.system(size: 10.5)).foregroundStyle(.tertiary)
                         Text(pr.age).font(.system(size: 10.5)).foregroundStyle(.secondary)
@@ -256,6 +263,21 @@ struct PRRow: View {
 
             if expanded {
                 VStack(alignment: .leading, spacing: 8) {
+                    if let checks = pr.checks, !checks.isEmpty {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("CR 判据")
+                                .font(.system(size: 9.5, weight: .medium))
+                                .foregroundStyle(.tertiary)
+                            ForEach(checks.prefix(6)) { check in
+                                CheckLine(check: check)
+                            }
+                            if checks.count > 6 {
+                                Text("还有 \(checks.count - 6) 条（看 tl review 的完整输出）")
+                                    .font(.system(size: 9.5))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
                     if !pr.impactedRoutes.isEmpty {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("受影响路由")
@@ -284,12 +306,52 @@ struct PRRow: View {
         .cardSurface(hovering: hovering)
         .contentShape(Rectangle())
         .onTapGesture {
-            guard pr.analyzed && !pr.impactedRoutes.isEmpty else { return }
+            let hasDetail = !pr.impactedRoutes.isEmpty || !(pr.checks ?? []).isEmpty
+            guard pr.analyzed && hasDetail else { return }
             withAnimation(Motion.expand) { expanded.toggle() }
         }
         .onHover { inside in
             withAnimation(Motion.hover) { hovering = inside }
         }
+    }
+
+    /// 结论只由 sidecar 给的 counts 决定，UI 不重新判。
+    private var reviewPill: (text: String, tint: Color)? {
+        guard pr.analyzed else { return nil }
+        guard let c = pr.reviewCounts else { return ("CR 未检查", Color.secondary) }
+        if c.must > 0 { return ("必看 \(c.must)", Theme.bad) }
+        if c.should > 0 { return ("建议看 \(c.should)", Theme.warn) }
+        return ("没命中判据", Color.secondary)
+    }
+}
+
+/// 一条 CR 判据。左边那道细色条是级别，不是装饰：must / should / may 三档。
+struct CheckLine: View {
+    let check: ReviewCheck
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill(check.tint)
+                .frame(width: 2.5)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(check.title)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(check.detail)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !check.evidence.isEmpty {
+                    Text(check.evidence.prefix(3).joined(separator: "  ·  "))
+                        .font(.system(size: 9.5, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+        }
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -536,8 +598,20 @@ struct HealthRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(metric.name)
-                    .font(.system(size: 12.5, weight: .medium))
+                HStack(spacing: 5) {
+                    Text(metric.name)
+                        .font(.system(size: 12.5, weight: .medium))
+                    // 「我自己机上的 12 次」和「团队 CI 的 12 次」不是同一件事，必须标出来
+                    if metric.historySource == "ci" {
+                        Text("CI")
+                            .font(.system(size: 8.5, weight: .bold))
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Capsule().fill(Theme.accent.opacity(0.14)))
+                            .foregroundStyle(Theme.accent)
+                            .help("趋势来自 CI 上报的 metrics/health.jsonl")
+                    }
+                }
                 Text(metric.note)
                     .font(.system(size: 10.5))
                     .foregroundStyle(.tertiary)

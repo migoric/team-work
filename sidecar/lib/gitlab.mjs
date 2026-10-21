@@ -75,4 +75,24 @@ export class GitLab {
   activeMilestones(projectId) {
     return this.paged(`/projects/${encodeURIComponent(projectId)}/milestones`, { state: 'active' });
   }
+
+  /**
+   * 读仓库里的一个文本文件（比如 CI 追加的 metrics/health.jsonl）。
+   * 404 = 这个分支上还没有这个文件，属于正常情况，返回 null 而不是抛。
+   */
+  async rawFile(projectId, filePath, ref = 'main') {
+    const url = this.url(
+      `/projects/${encodeURIComponent(projectId)}/repository/files/${encodeURIComponent(filePath)}/raw`,
+      { ref }
+    );
+    const res = await fetch(url, {
+      headers: { 'PRIVATE-TOKEN': this.token },
+      signal: AbortSignal.timeout(20000)
+    });
+    if (res.status === 404) return null;
+    if (res.status === 401) throw new Error('GitLab 返回 401：token 无效或已过期');
+    if (res.status === 403) throw new Error('GitLab 返回 403：token 缺少 read_api 权限');
+    if (!res.ok) throw new Error(`GitLab 返回 ${res.status} ${res.statusText} → ${filePath}`);
+    return res.text();
+  }
 }

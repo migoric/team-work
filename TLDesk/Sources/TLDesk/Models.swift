@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 struct Deviation: Codable, Identifiable, Hashable {
     let id: String
@@ -18,6 +19,48 @@ enum Risk: String, Codable, Hashable {
     case high, medium, low
 }
 
+/// CR 判据里的一条。级别是 sidecar 定的，UI 只负责排序与配色，不重新判。
+struct ReviewCheck: Codable, Hashable, Identifiable {
+    let id: String
+    /// must / should / may。未知值按 may 处理 —— 未来 sidecar 加级别时旧 app 不该崩。
+    let level: String
+    let title: String
+    let detail: String
+    /// `path:line` 形式，必须能指到具体位置，否则这条不该被报出来
+    let evidence: [String]
+
+    var tint: Color {
+        switch level {
+        case "must": return Theme.bad
+        case "should": return Theme.warn
+        default: return Theme.accent
+        }
+    }
+
+    init(id: String, level: String, title: String, detail: String, evidence: [String] = []) {
+        self.id = id
+        self.level = level
+        self.title = title
+        self.detail = detail
+        self.evidence = evidence
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        level = try c.decodeIfPresent(String.self, forKey: .level) ?? "may"
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        detail = try c.decodeIfPresent(String.self, forKey: .detail) ?? ""
+        evidence = try c.decodeIfPresent([String].self, forKey: .evidence) ?? []
+    }
+}
+
+struct ReviewCounts: Codable, Hashable {
+    let must: Int
+    let should: Int
+    let may: Int
+}
+
 struct PullRequest: Codable, Identifiable, Hashable {
     let id: String
     let title: String
@@ -33,6 +76,11 @@ struct PullRequest: Codable, Identifiable, Hashable {
     let analyzed: Bool
     let impactedRoutes: [String]
     let files: [String]
+    /// CR 判据（结构层 + 风险层）。`nil` = 没跑过，UI 必须显示「未检查」而不是「没问题」。
+    let checks: [ReviewCheck]?
+    /// must / should / may。由 sidecar 归并，UI 不重算。
+    let verdict: String?
+    let reviewCounts: ReviewCounts?
 
     init(
         id: String,
@@ -45,7 +93,10 @@ struct PullRequest: Codable, Identifiable, Hashable {
         note: String,
         analyzed: Bool = false,
         impactedRoutes: [String] = [],
-        files: [String] = []
+        files: [String] = [],
+        checks: [ReviewCheck]? = nil,
+        verdict: String? = nil,
+        reviewCounts: ReviewCounts? = nil
     ) {
         self.id = id
         self.title = title
@@ -58,10 +109,14 @@ struct PullRequest: Codable, Identifiable, Hashable {
         self.analyzed = analyzed
         self.impactedRoutes = impactedRoutes
         self.files = files
+        self.checks = checks
+        self.verdict = verdict
+        self.reviewCounts = reviewCounts
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, title, author, age, routes, components, risk, note, analyzed, impactedRoutes, files
+        case checks, verdict, reviewCounts
     }
 
     // 旧的 snapshot 里没有这几个字段。读旧文件应该退化，而不是整个 app 切回假数据。
@@ -78,6 +133,9 @@ struct PullRequest: Codable, Identifiable, Hashable {
         analyzed = try c.decodeIfPresent(Bool.self, forKey: .analyzed) ?? false
         impactedRoutes = try c.decodeIfPresent([String].self, forKey: .impactedRoutes) ?? []
         files = try c.decodeIfPresent([String].self, forKey: .files) ?? []
+        checks = try c.decodeIfPresent([ReviewCheck].self, forKey: .checks)
+        verdict = try c.decodeIfPresent(String.self, forKey: .verdict)
+        reviewCounts = try c.decodeIfPresent(ReviewCounts.self, forKey: .reviewCounts)
     }
 }
 
@@ -141,6 +199,9 @@ struct HealthMetric: Codable, Identifiable, Hashable {
     let note: String
     /// 最近 12 次的读数，画 sparkline 用。只有一次就画点，不画假趋势。
     let history: [Double]
+    /// history 的来源：`local`（本机棘轮基线）或 `ci`（CI 上报的 metrics/health.jsonl）。
+    /// 必须显示出来——「我自己的 12 次」和「团队的 12 次」不是同一件事。
+    let historySource: String
 
     init(
         id: String,
@@ -150,7 +211,8 @@ struct HealthMetric: Codable, Identifiable, Hashable {
         ratio: Double,
         worse: Bool,
         note: String,
-        history: [Double] = []
+        history: [Double] = [],
+        historySource: String = "local"
     ) {
         self.id = id
         self.name = name
@@ -160,10 +222,11 @@ struct HealthMetric: Codable, Identifiable, Hashable {
         self.worse = worse
         self.note = note
         self.history = history
+        self.historySource = historySource
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, value, delta, ratio, worse, note, history
+        case id, name, value, delta, ratio, worse, note, history, historySource
     }
 
     init(from decoder: Decoder) throws {
@@ -176,6 +239,7 @@ struct HealthMetric: Codable, Identifiable, Hashable {
         worse = try c.decodeIfPresent(Bool.self, forKey: .worse) ?? false
         note = try c.decodeIfPresent(String.self, forKey: .note) ?? ""
         history = try c.decodeIfPresent([Double].self, forKey: .history) ?? []
+        historySource = try c.decodeIfPresent(String.self, forKey: .historySource) ?? "local"
     }
 }
 
@@ -262,7 +326,15 @@ extension Snapshot {
                 note: "4 个改动被多条路由共用",
                 analyzed: true,
                 impactedRoutes: ["/orders/[id]", "/orders/list", "/refund/confirm", "/refund/result", "/me/orders"],
-                files: ["components/Modal.tsx", "components/Form.tsx", "orders/refund.tsx"]
+                files: ["components/Modal.tsx", "components/Form.tsx", "orders/refund.tsx"],
+                checks: [
+                    ReviewCheck(id: "scope.sensitive.钱", level: "must", title: "碰到敏感路径：钱", detail: "这里的 bug 不是「显示错了」，是有资损或数据风险。按流程走完再合。", evidence: ["src/refund/submit.ts"]),
+                    ReviewCheck(id: "risk.tsIgnore", level: "should", title: "压掉了类型检查", detail: "压制本身可能是对的，但它把「为什么这里不合法」这个问题藏起来了，要求补一句原因。", evidence: ["src/refund/submit.ts:42"]),
+                    ReviewCheck(id: "risk.console", level: "should", title: "调试输出没删", detail: "生产代码里的 console 会进产物、进采集。", evidence: ["src/refund/submit.ts:88"]),
+                    ReviewCheck(id: "scope.noTests", level: "should", title: "改了产品代码，但没动测试", detail: "不是所有改动都需要测试，但「顺手改的」最容易缺。", evidence: ["src/refund/submit.ts"])
+                ],
+                verdict: "must",
+                reviewCounts: ReviewCounts(must: 1, should: 3, may: 0)
             ),
             PullRequest(
                 id: "491",

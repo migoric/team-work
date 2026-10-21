@@ -74,13 +74,16 @@ struct Sidebar: View {
                 Image(systemName: panel.icon)
                     .font(.system(size: 12, weight: .medium))
                     .frame(width: 18)
-                    .foregroundStyle(selected ? panel.tint : Color.secondary)
+                    // 选中态不跟面板颜色走。四个 tab 四种颜色只是"花"，而且玻璃一旦被染色，
+                    // 深色外观下白字就落在浅色玻璃上 —— 对比度掉到看不见。语义色留给面板内容，
+                    // 侧边栏只回答一个问题：哪一行被选中了。
+                    .foregroundStyle(selected ? Color.primary.opacity(0.76) : Color.secondary)
                 Text(panel.title)
                     .font(.system(size: 12.5, weight: selected ? .semibold : .regular))
                     .foregroundStyle(selected ? Color.primary : Color.primary.opacity(0.82))
                 Spacer(minLength: 4)
                 if let count = badge(for: panel), count > 0 {
-                    Badge(count: count, tint: selected ? panel.tint : Color.secondary)
+                    Badge(count: count, tint: selected ? Color.primary.opacity(0.62) : Color.secondary)
                 }
             }
             .padding(.horizontal, 10)
@@ -90,12 +93,15 @@ struct Sidebar: View {
                 if selected {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(.clear)
-                        .glassEffect(
-                            .regular.tint(panel.tint.opacity(0.28)).interactive(),
-                            in: .rect(cornerRadius: 10)
-                        )
+                        // 不 tint：原生感来自「形变迁移 + 材质」，不来自染色。
+                        // 未染色的 regular 玻璃跟着外观走（浅色浅、深色深），正好托住 primary 文字。
+                        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 10))
                         .glassEffectID(panel.rawValue, in: glassNamespace)
                         .glassEffectTransition(.matchedGeometry)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
+                        }
                 } else if hovering == panel {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color.primary.opacity(0.045))

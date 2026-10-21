@@ -20,6 +20,8 @@
 1. **只读。** 所有输入都来自 git / GitLab / 本地体检，不要求任何人改变工作习惯，不做填报。
 2. **颜色要分级。** 小偏差用灰色，只让真正需要介入的条目变红。一律刷红会让红色失信。
 3. **不确定就明说。** 没算过的写「影响面待分析」，没数据的那栏就空着。**宁可空，也不填假数**。
+4. **语义色只出现在内容里。** 侧边栏、选中态、导航一律中性：四个 tab 四种颜色不叫分级，
+   叫装饰；而且玻璃一旦被染色，深色外观下的白字会落在浅色玻璃上，直接看不见了。
 
 ## 结构
 
@@ -28,20 +30,26 @@ TLDesk/                 应用本体（只读消费快照）
 ├── Package.swift       SPM 可执行 target，平台钉 macOS 26
 ├── Info.plist          bundle 元数据
 ├── build.sh            编译 → 组 bundle → ad-hoc 签名
+├── make-icon.sh        生成图标 → Assets/AppIcon.icns（改了 Tools/make-icon.swift 才需要跑）
+├── Tools/make-icon.swift  图标画法：纸白 squircle + 2×2 方阵（右下那格空着），逐尺寸矢量重画
+├── Assets/AppIcon.icns 图标产物，随仓库走
 ├── Sources/TLDesk/     视图、模型、玻璃材质、图表
 ├── fixtures/           sidecar 的 JSON 契约样例
 └── renders/            离屏渲染产物（git 忽略）
 
 sidecar/                采集与分析（Node，零依赖）
-├── tl.mjs              CLI：scan / auth / projects / facts / health / impact
+├── tl.mjs              CLI：scan / auth / projects / facts / health / trend / review / trace / impact
 ├── lib/scan.mjs        本机扫描：仓库发现、实例判定、凭据来源枚举
 ├── lib/auth.mjs        凭据解析（env → config → glab → 钥匙串 → netrc）
 ├── lib/gitlab.mjs      极简 REST 客户端，只有 GET
 ├── lib/facts.mjs       进展偏差 + 快照组装
 ├── lib/impact.mjs      导入图、路由识别、影响面反推
+├── lib/review.mjs      CR 判据：结构层 + 风险层（只吃 diff）
+├── lib/sourcemap.mjs   sourcemap 反查：生成位置 → 源码位置 → 最近改动它的 commit
+├── lib/trend.mjs       CI 上报的健康度趋势（JSONL）
 ├── lib/health.mjs      离线体检 + 棘轮基线
 ├── lib/bugs.mjs        bug issue 归因
-└── test/               64 个单测（node --test）
+└── test/               106 个单测（node --test）
 ```
 
 两层之间只有一个契约文件：
@@ -66,6 +74,9 @@ node tl.mjs auth                                   # 检查凭据、验证 token
 node tl.mjs projects                               # 列出可见项目
 node tl.mjs facts --project group/repo --repo ~/code/your-frontend
 node tl.mjs health --repo ~/code/your-frontend     # 只跑体检，不需要 GitLab
+node tl.mjs review --repo .                        # 对本地 diff 跑 CR 判据，不需要 GitLab
+node tl.mjs trace --repo . --at dist/app.js:1:48213 # sourcemap 反查 + 找最近改动它的 commit
+node tl.mjs trend --file metrics/health.jsonl      # 看 CI 上报的趋势
 node tl.mjs impact --repo . --files src/ui/Button.tsx
 ```
 
@@ -135,6 +146,28 @@ GitLab 里没有「声称进度」这种字段。硬造一个就得让人填表�
 只认本地存在的文件（分支不一致的会进 notes 而不是硬算）、只认 Next 的路由约定。
 识别不到路由时如实显示「没有路由引用这些改动」，不编。
 
+#### CR 判据：结构层 + 风险层
+
+影响面回答的是「先看哪个」，判据回答的是「这个 diff 里有什么必须先问清楚」。
+全部是 **deterministic** 的：同一份 diff 跑一百次结果一样，每条结论都能指到 `file:line`。
+
+| 层 | 判据 | 级别 |
+|---|---|---|
+| 结构 | 改动面 >15 个文件或 >400 行（评审会失效） | 必看 |
+| 结构 | 动了构建 / 依赖配置（`package.json`、lockfile、`tsconfig`、`next.config`…） | 必看 |
+| 结构 | 碰到敏感路径：登录态 / 钱 / 权限 / 密钥签名 / 文件进出 | 必看 |
+| 结构 | 删掉了测试文件 | 必看 |
+| 结构 | 改了产品代码但一个测试都没动 | 建议看 |
+| 结构 | 纯重命名、只动样式或文案 | 可以不细看 |
+| 风险 | `debugger`、`eval` / `new Function` / `dangerouslySetInnerHTML`、明文密钥 | 必看 |
+| 风险 | `@ts-ignore`、`as any`、lint 抑制、`console.*`、空 `catch`、`<img>` 缺 `alt` | 建议看 |
+| 风险 | 新增 `TODO` / `FIXME` / `HACK` | 可以不看 |
+
+三条不说的话：
+- **只扫新增行**。删掉的那行里写着 `debugger` 不算命中。
+- **不读整文件**，所以判断不了「这个函数是不是太长了」；**不跑 tsc / eslint**，类型和规则问题仍是 CI 的活。
+- 没命中任何判据 ≠ 没问题，只是「模式表里没匹配上」。UI 上写的是「没命中判据」，不是「通过」。
+
 ### Bug：只有天数和归属是真的
 
 没接监控 SDK，就没有「出现 14 次」这种数字。所以：
@@ -145,6 +178,44 @@ GitLab 里没有「声称进度」这种字段。硬造一个就得让人填表�
 措辞上严格区分「最近改动过」和「就是它引入的」——后者没有 sourcemap 和发布记录是断不了的。
 如果往 `~/.tldesk/errors.jsonl` 写一行一条的错误记录（`{fingerprint,message,count,file}`），
 数字才会变成真正的出现次数。
+
+### sourcemap 反查：线上行号翻回源码
+
+`index-a1b2c3.js:1:48213` 里第 1 行是整包，48213 列是压缩后的某个字符。
+**没有 sourcemap，任何"就是这行出错"的说法都是编的。** 所以这条链路只有两步，每一步都可复核：
+
+1. **翻位置**：解 `mappings`（base64 VLQ），取「最后一个生成列不大于目标」的段，得到源码行列。
+   支持 index map（`sections`）、外链 `.map`、inline base64，三种来源都认。
+2. **找改动**：把 sourcemap 里的路径（`webpack:///./src/a.ts`、`../src/a.ts`、构建机的
+   `/builds/group/repo/src/...`）落回仓库相对路径，再 `git log -1 -- <file>`。
+
+```bash
+tl trace --repo . --at dist/assets/index-a1b2c3.js:1:48213
+tl trace --repo . --stack ./stack.txt
+tl trace --repo . --errors        # 批量反查 ~/.tldesk/errors.jsonl
+```
+
+三条硬边界：**没有 `.map` 就明说「无法定位」**（不猜文件）；路径对不上本地仓库时
+**不跑 git log**（同名文件的 commit 比没有更糟）；结论只能写「这个文件最近被改过」。
+
+### CI 上报：趋势为什么要进仓库
+
+原来健康度只有本地基线 —— 换台机器就断了，而且那只是我一个人的视角。
+现在的另一条来源是 **CI 每次跑完往仓库追加一行读数**：
+
+```bash
+# pipeline 里
+tl health --report --path metrics/health.jsonl
+git add metrics/health.jsonl && git commit -m "chore(metrics): 体检读数" && git push
+# 本机看
+tl trend --project group/repo --ref main
+```
+
+- **JSONL 而不是 JSON**：append 一次写一行，两个 pipeline 同时跑不会互相覆盖（数组要读-改-写，必然打架）
+- **写发生在 CI，读仍然只有 GET**：采集端还是只读，只读原则没破
+- **不上传到服务端**：那需要一台常驻机器和一个库，自用工具的维护成本会从 0 变成"每月看一眼有没有挂"
+- **只有 1 个点就不画趋势**，`direction` 记 `unknown` —— 一个点画出来的线最会骗人
+- UI 上带 `CI` 角标：**「我自己的 12 次」和「团队的 12 次」不是同一件事**
 
 ### 健康度：五项离线指标 + 棘轮
 
@@ -165,7 +236,8 @@ GitLab 里没有「声称进度」这种字段。硬造一个就得让人填表�
 
 ```bash
 cd TLDesk
-./build.sh
+./build.sh          # 图标已在 Assets/ 里，不需要每次重建
+./make-icon.sh      # 只在改图标画法之后跑
 open TLDesk.app
 ```
 
@@ -202,7 +274,9 @@ open TLDesk.app
 - [x] sidecar 的 JSON 契约（Swift 端对旧快照做容错解码）
 - [x] `tl facts` 采集（GitLab issue / MR），凭据自动解析
 - [x] 影响面分析：反向导入图 + 路由反推 + 风险分
+- [x] CR 判据：结构层 + 风险层，每条带 `file:line` 证据
 - [x] 本地健康度体检 + 棘轮基线 + sparkline
 - [x] Bug：GitLab issue + 文件级 commit 归因
-- [ ] sourcemap 反查 commit（需要构建产物与发布记录）
-- [ ] CI 上报的历史趋势（现在是本地基线，不是团队共享）
+- [x] sourcemap 反查：生成位置 → 源码位置 → 最近改动它的 commit
+- [x] CI 上报的趋势（`metrics/health.jsonl`，只读读取，UI 标 `CI`）
+- [ ] 团队共享的基线（现在仍按分支各算各的，`ref` 只做展示）
