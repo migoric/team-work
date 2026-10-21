@@ -6,6 +6,10 @@ struct Sidebar: View {
 
     @Namespace private var glassNamespace
     @State private var hovering: Panel?
+    @State private var showScan = false
+    /// 扫描器挂在侧边栏上，而不是环境对象：它只在打开这一页时有用，
+    /// 不该为了它改整个注入链（离屏渲染也要能跑）。
+    @StateObject private var scanner = Scanner()
 
     private func badge(for panel: Panel) -> Int? {
         switch panel {
@@ -24,6 +28,10 @@ struct Sidebar: View {
             footer
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .sheet(isPresented: $showScan) {
+            ScanSheet(scanner: scanner)
+                .environmentObject(store)
+        }
     }
 
     private var header: some View {
@@ -103,6 +111,29 @@ struct Sidebar: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 8) {
             Divider().opacity(0.35)
+
+            Button {
+                scanner.loadExisting()
+                showScan = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.system(size: 9.5))
+                    Text("本机扫描")
+                        .font(.system(size: 9.5))
+                    Spacer(minLength: 2)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.tertiary)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .pillSurface()
+
             HStack(spacing: 8) {
                 Image(systemName: store.isSample ? "flask" : "dot.radiowaves.left.and.right")
                     .font(.system(size: 9.5))

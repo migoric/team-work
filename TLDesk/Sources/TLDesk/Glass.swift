@@ -102,7 +102,9 @@ private struct PlainCard: ViewModifier {
             .overlay(
                 shape.strokeBorder(
                     LinearGradient(
-                        colors: [Color.strokeStrong, Color.strokeWeak],
+                        // 只给「强→弱」两档时，右下角几乎透明，卡片右边缘看起来像被裁掉了。
+                        // 补一个中间回抬，四个角都有轮廓，才像一张完整的卡。
+                        colors: [Color.strokeStrong, Color.strokeWeak, Color.strokeStrong.opacity(0.78)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
@@ -188,6 +190,34 @@ extension View {
 
     func inlineGlass(radius: CGFloat = Theme.pillRadius, tint: Color? = nil) -> some View {
         modifier(InlineGlassModifier(radius: radius, tint: tint))
+    }
+
+    /// 玻璃按钮。离屏出图时必须退成系统按钮 —— ImageRenderer 画不出玻璃材质，
+    /// 会把按钮画成一块没有文字的实心方块，等于按钮在出图里"消失"了。
+    func glassButton(prominent: Bool = false) -> some View {
+        modifier(GlassButtonModifier(prominent: prominent))
+    }
+}
+
+private struct GlassButtonModifier: ViewModifier {
+    @Environment(\.offlineRender) private var offline
+    var prominent: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if offline {
+            if prominent {
+                content.buttonStyle(.borderedProminent)
+            } else {
+                content.buttonStyle(.bordered)
+            }
+        } else {
+            if prominent {
+                content.buttonStyle(.glassProminent)
+            } else {
+                content.buttonStyle(.glass)
+            }
+        }
     }
 }
 

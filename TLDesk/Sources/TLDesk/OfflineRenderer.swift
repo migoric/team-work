@@ -23,21 +23,23 @@ enum OfflineRenderer {
         }
 
         let store = Store()
-        let jobs: [(String, AnyView)] = [
-            ("1-progress", AnyView(ProgressPanel().environmentObject(store))),
-            ("2-review", AnyView(ReviewPanel().environmentObject(store))),
-            ("3-bugs", AnyView(BugsPanel().environmentObject(store))),
-            ("4-health", AnyView(HealthPanel().environmentObject(store)))
+        let jobs: [(String, CGFloat, AnyView)] = [
+            ("1-progress", 1080, AnyView(ProgressPanel().environmentObject(store))),
+            ("2-review", 1080, AnyView(ReviewPanel().environmentObject(store))),
+            ("3-bugs", 1080, AnyView(BugsPanel().environmentObject(store))),
+            ("4-health", 1080, AnyView(HealthPanel().environmentObject(store))),
+            // 扫描页是 sheet，宽度固定；它读的是 ~/.tldesk/scan.json，没有就出空态
+            ("5-scan", 780, AnyView(ScanSheet(scanner: Scanner()).environmentObject(store)))
         ]
 
-        for (name, view) in jobs {
+        for (name, width, view) in jobs {
             let wrapped = ZStack {
                 Backdrop()
                 view
             }
             .environment(\.offlineRender, true)
             .environment(\.colorScheme, isDark ? .dark : .light)
-            .frame(width: 1080, alignment: .topLeading)
+            .frame(width: width, alignment: .topLeading)
             .background(Color.windowBase)
 
             // 只在 NSApp.appearance 上设是不够的：ImageRenderer 画进自己的位图上下文，

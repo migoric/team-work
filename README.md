@@ -33,20 +33,22 @@ TLDesk/                 应用本体（只读消费快照）
 └── renders/            离屏渲染产物（git 忽略）
 
 sidecar/                采集与分析（Node，零依赖）
-├── tl.mjs              CLI：auth / projects / facts / health / impact
+├── tl.mjs              CLI：scan / auth / projects / facts / health / impact
+├── lib/scan.mjs        本机扫描：仓库发现、实例判定、凭据来源枚举
 ├── lib/auth.mjs        凭据解析（env → config → glab → 钥匙串 → netrc）
 ├── lib/gitlab.mjs      极简 REST 客户端，只有 GET
 ├── lib/facts.mjs       进展偏差 + 快照组装
 ├── lib/impact.mjs      导入图、路由识别、影响面反推
 ├── lib/health.mjs      离线体检 + 棘轮基线
 ├── lib/bugs.mjs        bug issue 归因
-└── test/               46 个单测（node --test）
+└── test/               64 个单测（node --test）
 ```
 
 两层之间只有一个契约文件：
 
 ```
-~/.tldesk/snapshot.json   ← sidecar 采集写入
+~/.tldesk/snapshot.json   ← sidecar 采集写入（四个面板）
+~/.tldesk/scan.json       ← 本机扫描结果（扫描页，不含 token）
 ~/.tldesk/health.json     ← 体检基线（棘轮）
           ↓
       TLDesk.app          ← 只读消费，不联网、不写库、不常驻
@@ -59,6 +61,7 @@ sidecar/                采集与分析（Node，零依赖）
 
 ```bash
 cd sidecar
+node tl.mjs scan                                   # 先扫一遍：有哪些 GitLab 仓库、token 在哪
 node tl.mjs auth                                   # 检查凭据、验证 token
 node tl.mjs projects                               # 列出可见项目
 node tl.mjs facts --project group/repo --repo ~/code/your-frontend
@@ -69,6 +72,37 @@ node tl.mjs impact --repo . --files src/ui/Button.tsx
 凭据按优先级自动解析，**不需要把 token 写进代码**：
 `GITLAB_TOKEN` 环境变量 → `~/.tldesk/config.json` → glab CLI 配置 → 钥匙串（git credential）→ `~/.netrc`。
 只需要 `read_api`，全程只有 GET，token 只在内存里。
+
+### 本机扫描：让工具自己去找，别让人写配置
+
+第一次用最烦的一步是「把你的 token 填进某个 JSON」。可凭据本来就在机器里，
+所以 `tl scan` 自己去翻：
+
+1. **找仓库**：从常见代码目录（或 `--roots` 指定）往下走，遇到 `.git` 就当作仓库根，
+   不钻进 `node_modules`；`.git` 是文件时按 worktree 解析 `gitdir`
+2. **判断是不是 GitLab**：五个本地信号任一命中即可 —— 域名含 gitlab、有 `.gitlab-ci.yml`、
+   有 `.gitlab/` 目录、本机有该 host 的凭据、**该实例存在三级以上 group 路径**
+   （GitHub 只有 `owner/repo`）。证据不足的 host 再问一次 `/api/v4/version`：
+   401/403 也算命中（端点存在，只是要授权），连不上就记「无法确认」而不是「不是」
+3. **找 token**：环境变量 / `~/.tldesk/config.json` / glab 配置 / `~/.netrc` /
+   `~/.git-credentials` / shell 启动文件 / 项目里的 `.env`
+4. **顺手报警**：remote URL 里内嵌了 token 是安全隐患，扫到就列出来
+
+```bash
+node tl.mjs scan                     # 人看：每个仓库都带「判定依据」
+node tl.mjs scan --roots ~/code      # 代码不在默认目录时
+node tl.mjs scan --keychain          # 额外读钥匙串（会弹系统授权框，默认不读）
+node tl.mjs scan --write             # 把选中的 host/token/项目写进 config（600，原文件自动备份）
+node tl.mjs scan --json              # 给 GUI / 脚本，始终脱敏
+```
+
+几个刻意的选择：
+
+- **钥匙串默认不读。** 那会弹系统授权框并挂住进程，必须由人显式触发
+- **同一个 token 出现在多处只显示一次**，但把所有出处都列出来
+- **每个判定都给依据**，让人能自己判断这条可信不可信，而不是给一个没有来路的结论
+- **GUI 不重新实现扫描**，它调同一条 CLI。两套实现一定会分叉，分叉之后
+  「界面说没 token、命令行说有」会直接毁掉可信度
 
 ### 进展：计划 vs 事实
 
@@ -156,10 +190,13 @@ open TLDesk.app
 >    出图只用来看排版与层级，**观感必须以真窗口为准**。
 > 3. 深色出图光设 `NSApp.appearance` 不够，动态色取的是 `currentDrawingAppearance`，
 >    得用 `performAsCurrentDrawingAppearance` 包住渲染。
+> 4. **`.buttonStyle(.glass)` 画出来是一块没有文字的实心方块** —— 玻璃按钮在出图里等于消失。
+>    所以按钮走 `glassButton()` 包装，离屏时退成系统边框按钮（见 `Glass.swift`）。
 
 ## 现状
 
 - [x] 四个面板的展示层 + Liquid Glass 材质 + 动效
+- [x] 本机扫描：仓库发现 / 实例判定 / 凭据来源枚举，GUI 内可一键扫描并直接采集
 - [x] sidecar 的 JSON 契约（Swift 端对旧快照做容错解码）
 - [x] `tl facts` 采集（GitLab issue / MR），凭据自动解析
 - [x] 影响面分析：反向导入图 + 路由反推 + 风险分
