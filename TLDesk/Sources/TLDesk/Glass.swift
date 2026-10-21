@@ -221,6 +221,55 @@ private struct GlassButtonModifier: ViewModifier {
     }
 }
 
+// MARK: - 侧边栏选中态
+
+/// 选中态玻璃必须贴在**行内容本身**上，不能塞进 `.background { }`。
+///
+/// 踩过的坑：`glassEffect` 写在 background 里、外面又套 `GlassEffectContainer` 时，
+/// 玻璃会被提到容器的玻璃通道单独合成，层级跑到内容前面 —— 于是玻璃的背板模糊把
+/// 自己的图标和文字糊掉，浅色下看起来就是"一块白板 + 几个灰块"。
+/// 贴到内容上之后，内容就是玻璃的 foreground，几何上不可能被自己的背板吞掉。
+///
+/// 另一个坑：`.fill(.clear)` 的形状 + glassEffect 在浅色下是一层薄白，配 `Color.primary`
+/// 才有对比度；染色（tint）会让玻璃整体变亮，深色下白字直接消失，所以这里不 tint。
+private struct NavSelection: ViewModifier {
+    @Environment(\.offlineRender) private var offline
+    var selected: Bool
+    var glassID: String
+    var namespace: Namespace.ID
+    var radius: CGFloat
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if !selected {
+            content
+        } else if offline {
+            // ImageRenderer 画不出玻璃，出图时给等效的薄底，否则截图里"没有选中项"
+            content.background(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(Color.primary.opacity(0.07))
+            )
+        } else {
+            content
+                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: radius))
+                .glassEffectID(glassID, in: namespace)
+                .glassEffectTransition(.matchedGeometry)
+        }
+    }
+}
+
+extension View {
+    /// 侧边栏行选中态：真玻璃 + 在 GlassEffectContainer 里按 ID 形变迁移。
+    func navSelection(
+        _ selected: Bool,
+        id: String,
+        in namespace: Namespace.ID,
+        radius: CGFloat = 10
+    ) -> some View {
+        modifier(NavSelection(selected: selected, glassID: id, namespace: namespace, radius: radius))
+    }
+}
+
 // MARK: - 入场
 
 /// 错峰入场。只在面板切换时用一次，不要挂到每个 hover 上——

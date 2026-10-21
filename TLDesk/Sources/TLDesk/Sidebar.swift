@@ -89,20 +89,10 @@ struct Sidebar: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
             .contentShape(Rectangle())
+            // 玻璃贴在行内容上，不塞进 background —— 理由见 Glass.swift 的 NavSelection
+            .navSelection(selected, id: panel.rawValue, in: glassNamespace)
             .background {
-                if selected {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(.clear)
-                        // 不 tint：原生感来自「形变迁移 + 材质」，不来自染色。
-                        // 未染色的 regular 玻璃跟着外观走（浅色浅、深色深），正好托住 primary 文字。
-                        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 10))
-                        .glassEffectID(panel.rawValue, in: glassNamespace)
-                        .glassEffectTransition(.matchedGeometry)
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.5)
-                        }
-                } else if hovering == panel {
+                if !selected, hovering == panel {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(Color.primary.opacity(0.045))
                 }
